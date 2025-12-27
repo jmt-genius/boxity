@@ -16,7 +16,8 @@ contract SupplyChainTrust {
         string role;
         uint256 timestamp;
         string note;
-        string image; // IPFS hash or URL
+        string firstViewImage; // IPFS hash or URL for first view
+        string secondViewImage; // IPFS hash or URL for second view
         string eventHash; // Cryptographic hash for verification
         address loggedBy; // Address that logged the event
     }
@@ -27,7 +28,8 @@ contract SupplyChainTrust {
         string sku;
         string origin;
         uint256 createdAt;
-        string baselineImage; // IPFS hash or URL
+        string firstViewBaseline; // IPFS hash or URL for first view baseline
+        string secondViewBaseline; // IPFS hash or URL for second view baseline
         address creator; // Address that created the batch
         bool exists;
     }
@@ -102,14 +104,16 @@ contract SupplyChainTrust {
      * @param productName Name of the product
      * @param sku Product SKU (can be empty)
      * @param origin Origin/manufacturer information
-     * @param baselineImage IPFS hash or URL for baseline image
+     * @param firstViewBaseline IPFS hash or URL for first view baseline image
+     * @param secondViewBaseline IPFS hash or URL for second view baseline image
      */
     function createBatch(
         string memory batchId,
         string memory productName,
         string memory sku,
         string memory origin,
-        string memory baselineImage
+        string memory firstViewBaseline,
+        string memory secondViewBaseline
     ) external onlyAuthorized {
         require(!batches[batchId].exists, "Batch already exists");
         require(bytes(productName).length > 0, "Product name cannot be empty");
@@ -121,7 +125,8 @@ contract SupplyChainTrust {
             sku: sku,
             origin: origin,
             createdAt: block.timestamp,
-            baselineImage: baselineImage,
+            firstViewBaseline: firstViewBaseline,
+            secondViewBaseline: secondViewBaseline,
             creator: msg.sender,
             exists: true
         });
@@ -179,7 +184,8 @@ contract SupplyChainTrust {
      * @param actor Name of the actor/company performing the action
      * @param role Role of the actor (Manufacturer, 3PL, Warehouse, etc.)
      * @param note Description of the event
-     * @param image IPFS hash or URL for event image (can be empty)
+     * @param firstViewImage IPFS hash or URL for first view event image
+     * @param secondViewImage IPFS hash or URL for second view event image
      * @param eventHash Cryptographic hash for verification
      */
     function logEvent(
@@ -187,7 +193,8 @@ contract SupplyChainTrust {
         string memory actor,
         string memory role,
         string memory note,
-        string memory image,
+        string memory firstViewImage,
+        string memory secondViewImage,
         string memory eventHash
     ) external onlyAuthorized batchExists(batchId) {
         require(bytes(actor).length > 0, "Actor cannot be empty");
@@ -201,7 +208,8 @@ contract SupplyChainTrust {
             role: role,
             timestamp: block.timestamp,
             note: note,
-            image: image,
+            firstViewImage: firstViewImage,
+            secondViewImage: secondViewImage,
             eventHash: eventHash,
             loggedBy: msg.sender
         });

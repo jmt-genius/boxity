@@ -156,14 +156,14 @@ const Admin = () => {
     const finalBatchId = batchId || generateBatchId();
 
     try {
-      const baselinePacked = packImages(baselineImage1, baselineImage2);
-      // Create batch on blockchain
+      // Create batch on blockchain with separate baseline images
       const tx = await web3Service.createBatch(
         finalBatchId,
         productName,
         sku || "",
-        "Your Company",
-        baselinePacked || "/demo/placeholder.jpg"
+        connectedAddress, // <-- Use the actual wallet address
+        baselineImage1 || "/demo/placeholder.jpg",
+        baselineImage2 || "/demo/placeholder.jpg"
       );
 
       toast({

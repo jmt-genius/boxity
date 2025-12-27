@@ -9,6 +9,16 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, request, jsonify
 
+# Auth0 JWT validation
+try:
+    from .auth import optional_auth, require_auth
+    AUTH_AVAILABLE = True
+except Exception as e:
+    AUTH_AVAILABLE = False
+    optional_auth = lambda f: f  # No-op decorator
+    require_auth = lambda f: f  # No-op decorator
+    print("Auth module import failed:", e, file=sys.stderr)
+
 # CORS
 try:
     from flask_cors import CORS

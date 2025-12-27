@@ -517,14 +517,13 @@ export default function LogEvent(): JSX.Element {
         // Generate event hash for blockchain
         const eventHash = generateHash(`${batchId}${actor}${Date.now()}`);
 
-        const packedEventImages = packImages(imageAngle1, imageAngle2);
-        
         const tx = await web3Service.logEvent(
           batchId,
           actor,
           role,
           note,
-          packedEventImages || '',
+          imageAngle1 || '',
+          imageAngle2 || '',
           eventHash
         );
 
@@ -961,10 +960,21 @@ export default function LogEvent(): JSX.Element {
                 <Label>Current Images (2 angles)</Label>
 
                 {(() => {
-                  const baseline = selectedBatch?.baselineImage || "";
-                  const baselineUrls = unpackImages(baseline);
-                  const baselineAngle1 = baselineUrls[0] || baseline;
-                  const baselineAngle2 = baselineUrls[1] || baselineUrls[0] || baseline;
+                  // Handle both contract batches (firstViewBaseline/secondViewBaseline) and demo batches (baselineImage)
+                  let baselineAngle1 = "";
+                  let baselineAngle2 = "";
+                  
+                  if (isContractBatch && selectedBatch) {
+                    const contractBatch = selectedBatch as ContractBatch;
+                    baselineAngle1 = contractBatch.firstViewBaseline || "";
+                    baselineAngle2 = contractBatch.secondViewBaseline || "";
+                  } else if (selectedBatch) {
+                    const demoBatch = selectedBatch as DemoBatch;
+                    const baseline = demoBatch.baselineImage || "";
+                    const baselineUrls = unpackImages(baseline);
+                    baselineAngle1 = baselineUrls[0] || baseline;
+                    baselineAngle2 = baselineUrls[1] || baselineUrls[0] || baseline;
+                  }
 
                   const blockSubmitForAngle1 = Boolean(uploadedImageFileAngle1 && !integrityResultAngle1?.passed);
                   const blockSubmitForAngle2 = Boolean(uploadedImageFileAngle2 && !integrityResultAngle2?.passed);

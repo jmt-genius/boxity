@@ -131,25 +131,30 @@ const ContractBatchTimeline = ({ batchId }: { batchId: string }) => {
               <span>{new Date(event.timestamp * 1000).toLocaleString()}</span>
               <span className="font-mono">Hash: {event.eventHash.slice(0, 8)}...</span>
             </div>
-            {event.image && (
+            {(event.firstViewImage || event.secondViewImage) && (
               <div className="grid grid-cols-2 gap-2">
-                {(() => {
-                  const urls = unpackImages(event.image);
-                  const a = urls[0] || event.image;
-                  const b = urls[1] || "";
-                  const list = [a, b].filter(Boolean);
-                  return list.map((src, idx) => (
-                    <img
-                      key={`${src}-${idx}`}
-                      src={src}
-                      alt={`Event image ${idx + 1}`}
-                      className="w-16 h-16 object-cover rounded border"
-                      onError={(e) => {
-                        e.currentTarget.src = "/placeholder.svg";
-                      }}
-                    />
-                  ));
-                })()}
+                {event.firstViewImage && (
+                  <img
+                    key="first-view"
+                    src={event.firstViewImage}
+                    alt="First view"
+                    className="w-16 h-16 object-cover rounded border"
+                    onError={(e) => {
+                      e.currentTarget.src = "/placeholder.svg";
+                    }}
+                  />
+                )}
+                {event.secondViewImage && (
+                  <img
+                    key="second-view"
+                    src={event.secondViewImage}
+                    alt="Second view"
+                    className="w-16 h-16 object-cover rounded border"
+                    onError={(e) => {
+                      e.currentTarget.src = "/placeholder.svg";
+                    }}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -511,17 +516,28 @@ const Verify = () => {
                   </div>
                 </div>
 
-                {Boolean((batch as any).baselineImage) && (
-                  <div className="mt-4">
-                    <p className="text-sm text-muted-foreground mb-2">Baseline Images</p>
-                    <div className="grid grid-cols-2 gap-3 max-w-sm">
-                      {(() => {
-                        const baselinePacked = String((batch as any).baselineImage || "");
-                        const urls = unpackImages(baselinePacked);
-                        const a = urls[0] || baselinePacked;
-                        const b = urls[1] || "";
-                        const list = [a, b].filter(Boolean);
-                        return list.map((src, idx) => (
+                {(() => {
+                  // Handle both contract batches (firstViewBaseline/secondViewBaseline) and demo batches (baselineImage)
+                  let baselineImages: string[] = [];
+                  
+                  if (isContractBatch && batch) {
+                    const contractBatch = batch as ContractBatch;
+                    baselineImages = [
+                      contractBatch.firstViewBaseline || "",
+                      contractBatch.secondViewBaseline || ""
+                    ].filter(Boolean);
+                  } else if (batch) {
+                    const demoBatch = batch as DemoBatch;
+                    const baselinePacked = String(demoBatch.baselineImage || "");
+                    const urls = unpackImages(baselinePacked);
+                    baselineImages = [urls[0] || baselinePacked, urls[1] || ""].filter(Boolean);
+                  }
+                  
+                  return baselineImages.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-sm text-muted-foreground mb-2">Baseline Images</p>
+                      <div className="grid grid-cols-2 gap-3 max-w-sm">
+                        {baselineImages.map((src, idx) => (
                           <img
                             key={`${src}-${idx}`}
                             src={src}
@@ -531,11 +547,11 @@ const Verify = () => {
                               e.currentTarget.src = "/placeholder.svg";
                             }}
                           />
-                        ));
-                      })()}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  ) : null;
+                })()}
               </CardContent>
             </GlassCard>
 
