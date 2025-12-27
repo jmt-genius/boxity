@@ -64,6 +64,8 @@ app = Flask(__name__)
 if CORS is not None:
     CORS(app, resources={r"/analyze": {"origins": "*"}})
 
+SCORING_VERSION = "cv-v3"
+
 @app.after_request
 def _add_cors_headers(response):
     origin = request.headers.get("Origin")
@@ -241,6 +243,10 @@ def _compute_overall(differences: List[Dict[str, Any]]) -> Tuple[int, str, float
     
     # Clamp TIS score to ensure it's never above 100
     tis = _clamp(tis, 0, 100)
+
+    # Avoid unrealistic UI of exactly 0 when we have differences; reserve 0 only for explicit handling.
+    if differences and tis == 0:
+        tis = 1
     
     # Enhanced assessment logic based on actual TIS score
     if tis >= 80:
@@ -296,6 +302,152 @@ def _assess_from_tis(tis: int) -> Tuple[str, str]:
         return "MODERATE_RISK", "Moderate risk detected - supervisor review recommended"
     return "HIGH_RISK", "High risk detected - immediate quarantine required"
 
+def _region_from_bbox(x: int, y: int, w: int, h: int, img_w: int, img_h: int) -> str:
+    cx = x + (w / 2.0)
+    cy = y + (h / 2.0)
+    if cy < img_h / 3.0:
+        v = "top"
+    elif cy > (2.0 * img_h) / 3.0:
+        v = "bottom"
+    else:
+        v = "middle"
+    if cx < img_w / 3.0:
+        u = "left"
+    elif cx > (2.0 * img_w) / 3.0:
+        u = "right"
+    else:
+        u = "center"
+    return f"{v}-{u}"
+
+def _decode_cv2(img_bytes: bytes):
+    if cv2 is None or np is None:
+        return None
+    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+    im = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return im
+
+def _classical_diff_regions(baseline_bytes: bytes, current_bytes: bytes) -> List[Dict[str, Any]]:
+    if cv2 is None or np is None:
+        return []
+
+    bgr1 = _decode_cv2(baseline_bytes)
+    bgr2 = _decode_cv2(current_bytes)
+    if bgr1 is None or bgr2 is None:
+        return []
+
+    h1, w1 = bgr1.shape[:2]
+    h2, w2 = bgr2.shape[:2]
+    h = min(h1, h2)
+    w = min(w1, w2)
+    if h < 32 or w < 32:
+        return []
+
+    if (h1, w1) != (h, w):
+        bgr1 = cv2.resize(bgr1, (w, h), interpolation=cv2.INTER_AREA)
+    if (h2, w2) != (h, w):
+        bgr2 = cv2.resize(bgr2, (w, h), interpolation=cv2.INTER_AREA)
+
+    g1 = cv2.cvtColor(bgr1, cv2.COLOR_BGR2GRAY)
+    g2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2GRAY)
+
+    g1 = cv2.GaussianBlur(g1, (5, 5), 0)
+    g2 = cv2.GaussianBlur(g2, (5, 5), 0)
+
+    absdiff = cv2.absdiff(g1, g2)
+    mean_abs = float(np.mean(absdiff)) / 255.0
+
+    _, th = cv2.threshold(absdiff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=1)
+    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    img_area = float(w * h)
+
+    diffs: List[Dict[str, Any]] = []
+    idx = 0
+    total_changed_area = 0.0
+    candidates = []
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area <= 0:
+            continue
+        area_ratio = area / img_area
+        if area_ratio < 0.0015:
+            continue
+        candidates.append((area, c))
+
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    for area, c in candidates[:3]:
+        area_ratio = area / img_area
+        x, y, bw, bh = cv2.boundingRect(c)
+        region = _region_from_bbox(int(x), int(y), int(bw), int(bh), w, h)
+        total_changed_area += area
+
+        if area_ratio >= 0.04:
+            severity = "HIGH"
+            tis_delta = -int(_clamp(int(round(area_ratio * 120)), 6, 14))
+            confidence = min(0.98, 0.75 + area_ratio)
+            suggested_action = "Quarantine"
+        elif area_ratio >= 0.015:
+            severity = "MEDIUM"
+            tis_delta = -int(_clamp(int(round(area_ratio * 90)), 4, 10))
+            confidence = min(0.95, 0.65 + (area_ratio * 2.0))
+            suggested_action = "Review"
+        else:
+            severity = "LOW"
+            tis_delta = -int(_clamp(int(round(area_ratio * 70)), 2, 6))
+            confidence = min(0.9, 0.55 + (area_ratio * 3.0))
+            suggested_action = "Review"
+
+        diffs.append({
+            "id": f"cv-{idx}",
+            "region": region,
+            "bbox": [int(x), int(y), int(bw), int(bh)],
+            "type": "physical_damage",
+            "description": "Classical CV detected visual change consistent with damage/deformation.",
+            "severity": severity,
+            "confidence": float(confidence),
+            "explainability": [],
+            "suggested_action": suggested_action,
+            "tis_delta": int(tis_delta),
+        })
+        idx += 1
+
+    changed_ratio = float(total_changed_area / img_area) if img_area > 0 else 0.0
+    if not diffs:
+        if mean_abs >= 0.06:
+            impact = max(mean_abs * 120.0, changed_ratio * 200.0)
+            diffs.append({
+                "id": "cv-global",
+                "region": "global",
+                "bbox": None,
+                "type": "global_mismatch",
+                "description": "Classical CV detected a strong global mismatch between images.",
+                "severity": "HIGH" if mean_abs >= 0.12 else "MEDIUM",
+                "confidence": 0.85 if mean_abs >= 0.12 else 0.7,
+                "explainability": [],
+                "suggested_action": "Quarantine" if mean_abs >= 0.12 else "Review",
+                "tis_delta": -int(_clamp(int(round(impact)), 8, 26)) if mean_abs >= 0.12 else -int(_clamp(int(round(impact * 0.8)), 5, 18)),
+            })
+    else:
+        if mean_abs >= 0.10 or changed_ratio >= 0.06:
+            impact = max(mean_abs * 140.0, changed_ratio * 240.0)
+            diffs.append({
+                "id": "cv-global-severity",
+                "region": "global",
+                "bbox": None,
+                "type": "global_damage_indicator",
+                "description": "Classical CV indicates widespread change across the package surface.",
+                "severity": "HIGH",
+                "confidence": 0.9,
+                "explainability": [],
+                "suggested_action": "Quarantine",
+                "tis_delta": -int(_clamp(int(round(impact)), 8, 24)),
+            })
+
+    return diffs
+
 def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[str, Any]:
     baseline_bytes, baseline_mime = _load_image_bytes(baseline_src)
     current_bytes, current_mime = _load_image_bytes(current_src)
@@ -309,10 +461,17 @@ def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[
     current_info = _get_image_info(current_bytes)
 
     differences = _call_gemini((baseline_bytes, baseline_mime), (current_bytes, current_mime), view_label=view_label)
+    gemini_diff_count = len(differences)
     for d in differences:
         d["view"] = view_label
 
-    if (not differences or sum(d.get("confidence", 0) for d in differences) / max(1, len(differences)) < 0.6) and baseline_bytes and current_bytes:
+    avg_conf = sum(d.get("confidence", 0) for d in differences) / max(1, len(differences)) if differences else 0.0
+    total_impact = sum(abs(int(d.get("tis_delta", 0))) for d in differences) if differences else 0
+
+    cv_ready = bool(cv2 is not None and np is not None)
+    cv_used = False
+
+    if (not differences or avg_conf < 0.6 or total_impact == 0) and baseline_bytes and current_bytes:
         cv_regions = []
         try:
             if align_and_normalize is not None and cv2 is not None:
@@ -326,6 +485,7 @@ def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[
             cv_regions = _classical_diff_regions(baseline_bytes, current_bytes)
 
         if cv_regions:
+            cv_used = True
             for r in cv_regions:
                 r["view"] = view_label
             if differences:
@@ -353,6 +513,10 @@ def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[
             "medium_severity_count": len([d for d in differences if str(d.get("severity", "")).upper() == "MEDIUM"]),
             "low_severity_count": len([d for d in differences if str(d.get("severity", "")).upper() == "LOW"]),
             "analysis_timestamp": str(datetime.now().isoformat()) if 'datetime' in globals() else "unknown",
+            "scoring_version": SCORING_VERSION,
+            "gemini_diff_count": int(gemini_diff_count),
+            "cv_ready": bool(cv_ready),
+            "cv_used": bool(cv_used),
         },
     }
 
@@ -362,16 +526,16 @@ def analyze():
         if request.method == "OPTIONS":
             return ("", 204)
 
-        # quick runtime sanity
-        if not _configure_genai():
-            # If you do not want to require gemini for fallback, change logic here.
-            # For debugging, return an explicit error.
+        analyzers_available = (call_gemini_ensemble is not None) or (cv2 is not None and np is not None)
+        if not analyzers_available:
             return jsonify({
-                "error": "GOOGLE_API_KEY / GEMINI_API_KEY not configured or google.generativeai import failed.",
+                "error": "No analyzers available: Gemini is unavailable and OpenCV/Numpy are unavailable.",
                 "differences": [],
                 "aggregate_tis": 100,
-                "overall_assessment": "UNKNOWN"
+                "overall_assessment": "UNKNOWN",
             }), 500
+
+        gemini_ready = _configure_genai()
 
         data = request.get_json(silent=True) or {}
 
@@ -408,7 +572,11 @@ def analyze():
                 "overall_assessment": result["overall_assessment"],
                 "confidence_overall": result["confidence_overall"],
                 "notes": result["notes"],
-                "analysis_metadata": result["analysis_metadata"],
+                "analysis_metadata": {
+                    **result["analysis_metadata"],
+                    "gemini_ready": bool(gemini_ready),
+                    "cv_ready": bool(cv2 is not None and np is not None),
+                },
             }
             return jsonify(response)
 
@@ -482,6 +650,9 @@ def analyze():
                 "angle_2_tis": tis2,
                 "angle_tis_min": tis_worst,
                 "angle_tis_max": max(tis1, tis2),
+                "scoring_version": SCORING_VERSION,
+                "gemini_ready": bool(gemini_ready),
+                "cv_ready": bool(cv2 is not None and np is not None),
             },
         }
 
