@@ -1,0 +1,52 @@
+{
+  "name": "post_11labs",
+  "request": {
+    "type": "http",
+    "url": "https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb",
+    "scripts": {
+      "preRequest": "",
+      "postResponse": ""
+    },
+    "method": "POST",
+    "queryParams": [
+      {
+        "id": 0.04228077709269984,
+        "key": "output_format",
+        "value": "mp3_44100_128",
+        "isEnabled": true
+      }
+    ],
+    "headers": [
+      {
+        "id": 1766832119409,
+        "key": "xi-api-key",
+        "value": "sk_738eb8fda71f5e0883c6dd1fddcd6a58a5257a0885e35e25",
+        "isEnabled": true,
+        "description": "",
+        "dataType": "string"
+      }
+    ],
+    "body": [
+      {
+        "id": 1766836034900,
+        "key": "text",
+        "value": "The first move is what sets everything in motion.",
+        "isEnabled": true,
+        "type": "text"
+      },
+      {
+        "id": 1766836046615,
+        "key": "model_id",
+        "value": "eleven_multilingual_v2",
+        "isEnabled": true,
+        "type": "text"
+      }
+    ],
+    "contentType": "multipart/form-data",
+    "auth": {
+      "currentAuthType": "INHERIT",
+      "authConfigStore": {}
+    },
+    "pathVariables": []
+  }
+}

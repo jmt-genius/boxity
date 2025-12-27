@@ -78,9 +78,6 @@ class TTSService {
           environment: 'https://api.elevenlabs.io/',
         });
         console.log('TTS: ElevenLabs client initialized');
-        
-        // Pre-generate and cache all audio files
-        await this.preloadAllAudio();
       } else {
         console.warn('TTS: ElevenLabs API key not found');
       }
@@ -89,54 +86,6 @@ class TTSService {
     } catch (error) {
       console.error('TTS: Failed to configure audio mode:', error);
     }
-  }
-
-  private async preloadAllAudio() {
-    if (!this.client) return;
-
-    console.log('TTS: Pre-generating all audio files...');
-    const feedbackTypes: VoiceFeedback[] = [
-      'move_closer',
-      'move_farther',
-      'align_box',
-      'hold_steady',
-      'rotate_box',
-      'ready'
-    ];
-
-    const promises = feedbackTypes.map(async (feedback) => {
-      try {
-        const message = FEEDBACK_MESSAGES[feedback];
-        console.log(`TTS: Generating audio for "${feedback}": ${message}`);
-
-        const response = await this.client!.textToSpeech.convert(this.VOICE_ID, {
-          outputFormat: 'mp3_44100_128',
-          text: message,
-          modelId: 'eleven_multilingual_v2',
-        });
-
-        // Access character cost from headers
-        const charCost = response.headers.get('x-character-count');
-        const requestId = response.headers.get('request-id');
-        console.log(`TTS: "${feedback}" - Character cost:`, charCost, 'Request ID:', requestId);
-
-        // Get the audio data as ArrayBuffer
-        const audioBuffer = await response.arrayBuffer();
-
-        // Convert to base64 and create data URI
-        const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioBuffer)));
-        const audioUri = `data:audio/mpeg;base64,${base64Audio}`;
-
-        // Cache the audio
-        this.audioCache.set(feedback, audioUri);
-        console.log(`TTS: Cached audio for "${feedback}"`);
-      } catch (error) {
-        console.error(`TTS: Failed to generate audio for "${feedback}":`, error);
-      }
-    });
-
-    await Promise.all(promises);
-    console.log('TTS: All audio files pre-generated and cached');
   }
 
   async playFeedback(feedback: VoiceFeedback) {
@@ -159,17 +108,20 @@ class TTSService {
       const message = FEEDBACK_MESSAGES[feedback];
       console.log('TTS: Playing feedback:', message);
 
-      // Get audio from cache (should already be cached from initialization)
+      // Check if audio is already cached
       let audioUri = this.audioCache.get(feedback);
       
-      if (!audioUri) {
-        // If not cached, generate it now (fallback)
-        console.log('TTS: Audio not in cache, generating now...');
+      if (audioUri) {
+        console.log('TTS: Using cached audio');
+      } else {
+        // Generate audio only when needed
+        console.log('TTS: Generating audio with ElevenLabs...');
         
         if (!this.client) {
           throw new Error('TTS: ElevenLabs client not initialized. Please check your API key.');
         }
 
+        // Use client.textToSpeech.convert to generate audio
         const response = await this.client.textToSpeech.convert(this.VOICE_ID, {
           outputFormat: 'mp3_44100_128',
           text: message,
@@ -184,10 +136,9 @@ class TTSService {
         const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioBuffer)));
         audioUri = `data:audio/mpeg;base64,${base64Audio}`;
 
-        // Store in cache for next time
+        // Cache the generated audio for future use
         this.audioCache.set(feedback, audioUri);
-      } else {
-        console.log('TTS: Using cached audio');
+        console.log('TTS: Audio cached for future use');
       }
 
       // Play the audio
