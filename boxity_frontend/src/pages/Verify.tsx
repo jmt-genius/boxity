@@ -42,6 +42,16 @@ const ContractBatchTimeline = ({ batchId }: { batchId: string }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const IMAGE_PACK_DELIMITER = "||";
+  const unpackImages = (packed: string): string[] => {
+    const raw = String(packed || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(IMAGE_PACK_DELIMITER)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
   useEffect(() => {
     let mounted = true;
     const loadEvents = async () => {
@@ -122,14 +132,25 @@ const ContractBatchTimeline = ({ batchId }: { batchId: string }) => {
               <span className="font-mono">Hash: {event.eventHash.slice(0, 8)}...</span>
             </div>
             {event.image && (
-              <img
-                src={event.image}
-                alt="Event image"
-                className="w-16 h-16 object-cover rounded border"
-                onError={(e) => {
-                  e.currentTarget.src = "/placeholder.svg";
-                }}
-              />
+              <div className="grid grid-cols-2 gap-2">
+                {(() => {
+                  const urls = unpackImages(event.image);
+                  const a = urls[0] || event.image;
+                  const b = urls[1] || "";
+                  const list = [a, b].filter(Boolean);
+                  return list.map((src, idx) => (
+                    <img
+                      key={`${src}-${idx}`}
+                      src={src}
+                      alt={`Event image ${idx + 1}`}
+                      className="w-16 h-16 object-cover rounded border"
+                      onError={(e) => {
+                        e.currentTarget.src = "/placeholder.svg";
+                      }}
+                    />
+                  ));
+                })()}
+              </div>
             )}
           </div>
         </motion.div>
@@ -151,6 +172,16 @@ const Verify = () => {
   const [cameraError, setCameraError] = useState<string>("");
 
   const { toast } = useToast();
+
+  const IMAGE_PACK_DELIMITER = "||";
+  const unpackImages = (packed: string): string[] => {
+    const raw = String(packed || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(IMAGE_PACK_DELIMITER)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
 
   const handleSearch = useCallback(async () => {
     if (!searchId.trim()) return;
@@ -480,17 +511,29 @@ const Verify = () => {
                   </div>
                 </div>
 
-                {(batch as any).baselineImage && (
+                {Boolean((batch as any).baselineImage) && (
                   <div className="mt-4">
-                    <p className="text-sm text-muted-foreground mb-2">Baseline Image</p>
-                    <img
-                      src={(batch as any).baselineImage}
-                      alt="Baseline product"
-                      className="w-32 h-32 object-cover rounded-lg border"
-                      onError={(e) => {
-                        e.currentTarget.src = "/placeholder.svg";
-                      }}
-                    />
+                    <p className="text-sm text-muted-foreground mb-2">Baseline Images</p>
+                    <div className="grid grid-cols-2 gap-3 max-w-sm">
+                      {(() => {
+                        const baselinePacked = String((batch as any).baselineImage || "");
+                        const urls = unpackImages(baselinePacked);
+                        const a = urls[0] || baselinePacked;
+                        const b = urls[1] || "";
+                        const list = [a, b].filter(Boolean);
+                        return list.map((src, idx) => (
+                          <img
+                            key={`${src}-${idx}`}
+                            src={src}
+                            alt={`Baseline ${idx + 1}`}
+                            className="w-32 h-32 object-cover rounded-lg border"
+                            onError={(e) => {
+                              e.currentTarget.src = "/placeholder.svg";
+                            }}
+                          />
+                        ));
+                      })()}
+                    </div>
                   </div>
                 )}
               </CardContent>
