@@ -91,7 +91,11 @@ def _validate_or_repair(payload: Dict[str, Any], model) -> Dict[str, Any]:
             return {"differences": []}
 
 
-def call_gemini_ensemble(baseline: Tuple[Optional[bytes], Optional[str]], current: Tuple[Optional[bytes], Optional[str]]) -> List[Dict[str, Any]]:
+def call_gemini_ensemble(
+    baseline: Tuple[Optional[bytes], Optional[str]],
+    current: Tuple[Optional[bytes], Optional[str]],
+    view_label: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     if not _configure_genai():
         return []
 
@@ -99,6 +103,8 @@ def call_gemini_ensemble(baseline: Tuple[Optional[bytes], Optional[str]], curren
     current_bytes, current_mime = current
     if not baseline_bytes or not current_bytes:
         return []
+
+    view_context = f"\nVIEW CONTEXT: {view_label}\n" if view_label else ""
 
     system = (
         "You are an expert multimodal forensic analyst specializing in package integrity and tampering detection.\n"
@@ -132,7 +138,8 @@ def call_gemini_ensemble(baseline: Tuple[Optional[bytes], Optional[str]], curren
         "6. Explainability must list specific visual evidence\n"
         "7. TIS delta: seal_tamper(-40), repackaging(-35), digital_edit(-50), label_mismatch(-40), dent(-15), scratch(-8), others(-5)\n"
         "8. ALWAYS specify exact region (left side, right side, top edge, etc.) - never use generic terms\n"
-        "\n" + FEW_SHOT
+        + view_context
+        + "\n" + FEW_SHOT
     )
 
     parts = [
