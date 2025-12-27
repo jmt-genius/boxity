@@ -64,6 +64,19 @@ app = Flask(__name__)
 if CORS is not None:
     CORS(app, resources={r"/analyze": {"origins": "*"}})
 
+@app.after_request
+def _add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Max-Age"] = "600"
+    return response
+
 IMAGE_PACK_DELIMITER = "||"
 
 def _configure_genai():
@@ -343,9 +356,12 @@ def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[
         },
     }
 
-@app.route("/analyze", methods=["POST"])
+@app.route("/analyze", methods=["POST", "OPTIONS"])
 def analyze():
     try:
+        if request.method == "OPTIONS":
+            return ("", 204)
+
         # quick runtime sanity
         if not _configure_genai():
             # If you do not want to require gemini for fallback, change logic here.
