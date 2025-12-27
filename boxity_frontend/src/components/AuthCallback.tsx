@@ -3,6 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { useAuth0 } from "@auth0/auth0-react";
 import { Loader2 } from "lucide-react";
 
+// Type for Auth0 error with additional properties
+interface Auth0Error extends Error {
+  error?: string;
+  error_description?: string;
+}
+
 export const AuthCallback = () => {
   const { isLoading, isAuthenticated, error } = useAuth0();
   const navigate = useNavigate();
@@ -15,18 +21,19 @@ export const AuthCallback = () => {
       } else if (error) {
         // Handle error - redirect back to login
         console.error("Auth error:", error);
+        const auth0Error = error as Auth0Error;
         let errorMessage = error.message || "Authentication failed";
         
         // Check for connection not enabled error
-        if (error.error === 'invalid_request' || 
+        if (auth0Error.error === 'invalid_request' || 
             error.message?.includes('connection') || 
             error.message?.includes('not enabled') ||
-            error.error_description?.includes('connection')) {
+            auth0Error.error_description?.includes('connection')) {
           errorMessage = "Passwordless email connection is not enabled. Please enable it in Auth0 Dashboard: Applications → My App → Connections → Enable 'Email (Passwordless)'";
         } else if (error.message?.includes('email') || 
                    error.message?.includes('sending') || 
-                   error.error_description?.includes('email') ||
-                   error.error_description?.includes('sending')) {
+                   auth0Error.error_description?.includes('email') ||
+                   auth0Error.error_description?.includes('sending')) {
           errorMessage = "Auth0 email service is not configured. Please configure email sending in Auth0 Dashboard: Branding → Email Provider → Set up SMTP. See FIX_AUTH0_EMAIL_SENDING.md for details.";
         }
         
