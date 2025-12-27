@@ -42,6 +42,16 @@ const ContractBatchTimeline = ({ batchId }: { batchId: string }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const IMAGE_PACK_DELIMITER = "||";
+  const unpackImages = (packed: string): string[] => {
+    const raw = String(packed || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(IMAGE_PACK_DELIMITER)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
   useEffect(() => {
     let mounted = true;
     const loadEvents = async () => {
@@ -121,15 +131,31 @@ const ContractBatchTimeline = ({ batchId }: { batchId: string }) => {
               <span>{new Date(event.timestamp * 1000).toLocaleString()}</span>
               <span className="font-mono">Hash: {event.eventHash.slice(0, 8)}...</span>
             </div>
-            {event.image && (
-              <img
-                src={event.image}
-                alt="Event image"
-                className="w-16 h-16 object-cover rounded border"
-                onError={(e) => {
-                  e.currentTarget.src = "/placeholder.svg";
-                }}
-              />
+            {(event.firstViewImage || event.secondViewImage) && (
+              <div className="grid grid-cols-2 gap-2">
+                {event.firstViewImage && (
+                  <img
+                    key="first-view"
+                    src={event.firstViewImage}
+                    alt="First view"
+                    className="w-16 h-16 object-cover rounded border"
+                    onError={(e) => {
+                      e.currentTarget.src = "/placeholder.svg";
+                    }}
+                  />
+                )}
+                {event.secondViewImage && (
+                  <img
+                    key="second-view"
+                    src={event.secondViewImage}
+                    alt="Second view"
+                    className="w-16 h-16 object-cover rounded border"
+                    onError={(e) => {
+                      e.currentTarget.src = "/placeholder.svg";
+                    }}
+                  />
+                )}
+              </div>
             )}
           </div>
         </motion.div>
@@ -151,6 +177,16 @@ const Verify = () => {
   const [cameraError, setCameraError] = useState<string>("");
 
   const { toast } = useToast();
+
+  const IMAGE_PACK_DELIMITER = "||";
+  const unpackImages = (packed: string): string[] => {
+    const raw = String(packed || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(IMAGE_PACK_DELIMITER)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
 
   const handleSearch = useCallback(async () => {
     if (!searchId.trim()) return;
@@ -480,19 +516,42 @@ const Verify = () => {
                   </div>
                 </div>
 
-                {(batch as any).baselineImage && (
-                  <div className="mt-4">
-                    <p className="text-sm text-muted-foreground mb-2">Baseline Image</p>
-                    <img
-                      src={(batch as any).baselineImage}
-                      alt="Baseline product"
-                      className="w-32 h-32 object-cover rounded-lg border"
-                      onError={(e) => {
-                        e.currentTarget.src = "/placeholder.svg";
-                      }}
-                    />
-                  </div>
-                )}
+                {(() => {
+                  // Handle both contract batches (firstViewBaseline/secondViewBaseline) and demo batches (baselineImage)
+                  let baselineImages: string[] = [];
+                  
+                  if (isContractBatch && batch) {
+                    const contractBatch = batch as ContractBatch;
+                    baselineImages = [
+                      contractBatch.firstViewBaseline || "",
+                      contractBatch.secondViewBaseline || ""
+                    ].filter(Boolean);
+                  } else if (batch) {
+                    const demoBatch = batch as DemoBatch;
+                    const baselinePacked = String(demoBatch.baselineImage || "");
+                    const urls = unpackImages(baselinePacked);
+                    baselineImages = [urls[0] || baselinePacked, urls[1] || ""].filter(Boolean);
+                  }
+                  
+                  return baselineImages.length > 0 ? (
+                    <div className="mt-4">
+                      <p className="text-sm text-muted-foreground mb-2">Baseline Images</p>
+                      <div className="grid grid-cols-2 gap-3 max-w-sm">
+                        {baselineImages.map((src, idx) => (
+                          <img
+                            key={`${src}-${idx}`}
+                            src={src}
+                            alt={`Baseline ${idx + 1}`}
+                            className="w-32 h-32 object-cover rounded-lg border"
+                            onError={(e) => {
+                              e.currentTarget.src = "/placeholder.svg";
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
               </CardContent>
             </GlassCard>
 

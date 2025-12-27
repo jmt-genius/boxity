@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,103 +7,124 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
-  Animated,
+  TextInput,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
-import { Upload as UploadIcon, CheckCircle, AlertCircle } from 'lucide-react-native';
+import { CheckCircle, AlertCircle } from 'lucide-react-native';
 import { useApp } from '@/contexts/AppContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { theme } from '@/constants/theme';
 import { ipfsService } from '@/services/ipfs';
-import { apiService } from '@/services/api';
-import { imageProcessing } from '@/utils/imageProcessing';
+import { databaseService } from '@/services/database';
 import * as Haptics from 'expo-haptics';
-import * as Device from 'expo-constants';
 
 export default function UploadScreen() {
-  const { currentBatch, capturedImages, clearCapturedImages, addUpload } = useApp();
+  const { currentBatch, capturedImages, clearCapturedImages } = useApp();
   const { user } = useAuth();
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadComplete, setUploadComplete] = useState(false);
-  const [currentStep, setCurrentStep] = useState('');
+  
+  const [firstViewIpfs, setFirstViewIpfs] = useState('');
+  const [secondViewIpfs, setSecondViewIpfs] = useState('');
+  const [batchId, setBatchId] = useState('');
+  
+  const [isUploadingFirst, setIsUploadingFirst] = useState(false);
+  const [isUploadingSecond, setIsUploadingSecond] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleUpload = async () => {
-    if (!currentBatch || !user || capturedImages.length === 0) {
+  useEffect(() => {
+    if (currentBatch) {
+      setBatchId(currentBatch.batchId);
+    }
+  }, [currentBatch]);
+
+  const handleImageClick = async (viewType: 'first_view' | 'second_view') => {
+    const image = capturedImages.find(img => img.viewType === viewType);
+    if (!image) {
+      Alert.alert('Error', `No ${viewType === 'first_view' ? 'first' : 'second'} view image captured`);
       return;
     }
 
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    setIsUploading(true);
-    setUploadProgress(0);
-    setUploadComplete(false);
+    // If already uploaded, don't upload again
+    const currentIpfs = viewType === 'first_view' ? firstViewIpfs : secondViewIpfs;
+    if (currentIpfs) {
+      Alert.alert('Already Uploaded', 'This image has already been uploaded to IPFS');
+      return;
+    }
+
+    const setUploading = viewType === 'first_view' ? setIsUploadingFirst : setIsUploadingSecond;
+    const setIpfs = viewType === 'first_view' ? setFirstViewIpfs : setSecondViewIpfs;
 
     try {
-      const totalSteps = capturedImages.length * 3;
-      let completedSteps = 0;
+      setUploading(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      for (let i = 0; i < capturedImages.length; i++) {
-        const image = capturedImages[i];
-        console.log(`Processing image ${i + 1}/${capturedImages.length}`);
-
-        setCurrentStep(`Compressing image ${i + 1}...`);
-        const processedImage = await imageProcessing.compressImage(image.uri, 0.85);
-        completedSteps++;
-        setUploadProgress((completedSteps / totalSteps) * 100);
-
-        setCurrentStep(`Uploading to IPFS ${i + 1}...`);
-        const ipfsUrl = await ipfsService.uploadImage(processedImage.uri);
-        completedSteps++;
-        setUploadProgress((completedSteps / totalSteps) * 100);
-
-        setCurrentStep(`Saving metadata ${i + 1}...`);
-        const metadata = {
-          batchId: currentBatch.batchId,
-          viewType: image.viewType,
-          ipfsUrl,
-          imageHash: processedImage.hash,
-          timestamp: image.timestamp,
-          actorRole: user.role,
-          deviceId: Device.default.deviceId || 'unknown',
-          imageSize: processedImage.size,
-          imageWidth: processedImage.width,
-          imageHeight: processedImage.height,
-        };
-
-        await apiService.uploadMetadata(metadata);
-        
-        await addUpload({
-          id: `upload_${Date.now()}_${i}`,
-          batchId: metadata.batchId,
-          viewType: metadata.viewType,
-          ipfsUrl: metadata.ipfsUrl,
-          timestamp: metadata.timestamp,
-          actorRole: metadata.actorRole,
-          deviceId: metadata.deviceId,
-          status: 'uploaded',
-          productName: currentBatch.productName,
-        });
-
-        completedSteps++;
-        setUploadProgress((completedSteps / totalSteps) * 100);
-      }
-
-      setUploadComplete(true);
-      setCurrentStep('Upload complete!');
+      console.log(`Uploading ${viewType} to IPFS...`);
+      const ipfsUrl = await ipfsService.uploadImage(image.uri);
+      
+      setIpfs(ipfsUrl);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      await new Promise(resolve => setTimeout(resolve, 2500));
-      clearCapturedImages();
-      router.push('/(tabs)/history');
+      
+      Alert.alert('Success', `${viewType === 'first_view' ? 'First' : 'Second'} view uploaded to IPFS!`);
     } catch (error) {
-      console.error('Upload failed:', error);
-      setCurrentStep('Upload failed');
+      console.error(`Failed to upload ${viewType}:`, error);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Error', `Failed to upload ${viewType} to IPFS`);
     } finally {
-      setIsUploading(false);
+      setUploading(false);
     }
   };
+
+  const handleSubmit = async () => {
+    if (!batchId) {
+      Alert.alert('Error', 'Batch ID is required');
+      return;
+    }
+
+    if (!firstViewIpfs || !secondViewIpfs) {
+      Alert.alert('Error', 'Please upload both images to IPFS first');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+
+      // Submit to database using Insforge SDK
+      await databaseService.submitBatchImages({
+        batchId,
+        firstViewIpfs,
+        secondViewIpfs,
+      });
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        'Success',
+        'Data submitted successfully to database!',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              clearCapturedImages();
+              router.push('/(tabs)/history');
+            },
+          },
+        ]
+      );
+    } catch (error: any) {
+      console.error('Submit failed:', error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        'Error',
+        error?.message || 'Failed to submit data to database'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const firstViewImage = capturedImages.find(img => img.viewType === 'first_view');
+  const secondViewImage = capturedImages.find(img => img.viewType === 'second_view');
 
   if (!currentBatch || capturedImages.length === 0) {
     return (
@@ -129,104 +150,142 @@ export default function UploadScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Review & Upload</Text>
+          <Text style={styles.headerTitle}>Upload to IPFS</Text>
           <Text style={styles.headerSubtitle}>
-            Batch: {currentBatch.batchId}
+            Upload images and submit to database
           </Text>
         </View>
 
+        {/* Batch ID Input */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Captured Images</Text>
-          <View style={styles.imagesGrid}>
-            {capturedImages.map((image, index) => (
-              <View key={index} style={styles.imageCard}>
-                <Image source={{ uri: image.uri }} style={styles.image} contentFit="cover" />
-                <View style={styles.imageLabel}>
-                  <Text style={styles.imageLabelText}>
-                    {image.viewType === 'first_view' ? 'First View' : 'Second View'}
-                  </Text>
+          <Text style={styles.label}>Batch ID *</Text>
+          <TextInput
+            style={styles.input}
+            value={batchId}
+            onChangeText={setBatchId}
+            placeholder="Enter batch ID"
+            placeholderTextColor={theme.colors.textTertiary}
+          />
+        </View>
+
+        {/* First View Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>First View</Text>
+          
+          {firstViewImage && (
+            <TouchableOpacity
+              style={styles.imageCard}
+              onPress={() => handleImageClick('first_view')}
+              disabled={isUploadingFirst || !!firstViewIpfs}
+              activeOpacity={0.8}
+            >
+              {isUploadingFirst && (
+                <View style={styles.uploadingOverlay}>
+                  <ActivityIndicator size="large" color={theme.colors.primary} />
+                  <Text style={styles.uploadingText}>Uploading to IPFS...</Text>
                 </View>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Metadata</Text>
-          <View style={styles.metadataCard}>
-            <View style={styles.metadataRow}>
-              <Text style={styles.metadataLabel}>Batch ID</Text>
-              <Text style={styles.metadataValue}>{currentBatch.batchId}</Text>
-            </View>
-            <View style={styles.metadataRow}>
-              <Text style={styles.metadataLabel}>Product</Text>
-              <Text style={styles.metadataValue}>{currentBatch.productName}</Text>
-            </View>
-            <View style={styles.metadataRow}>
-              <Text style={styles.metadataLabel}>Actor Role</Text>
-              <Text style={styles.metadataValue}>{user?.role}</Text>
-            </View>
-            <View style={styles.metadataRow}>
-              <Text style={styles.metadataLabel}>Images</Text>
-              <Text style={styles.metadataValue}>{capturedImages.length}</Text>
-            </View>
-            <View style={styles.metadataRow}>
-              <Text style={styles.metadataLabel}>Timestamp</Text>
-              <Text style={styles.metadataValue}>
-                {new Date().toLocaleString()}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {!uploadComplete && (
-          <TouchableOpacity
-            style={[styles.uploadButton, isUploading && styles.uploadButtonDisabled]}
-            onPress={handleUpload}
-            disabled={isUploading}
-          >
-            {isUploading ? (
-              <ActivityIndicator color={theme.colors.background} />
-            ) : (
-              <>
-                <UploadIcon size={20} color={theme.colors.background} />
-                <Text style={styles.uploadButtonText}>Upload to IPFS</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        )}
-
-        {isUploading && (
-          <View style={styles.progressContainer}>
-            <Text style={styles.progressStep}>{currentStep}</Text>
-            <View style={styles.progressBar}>
-              <Animated.View
-                style={[
-                  styles.progressFill,
-                  { width: `${uploadProgress}%` },
-                ]}
+              )}
+              {firstViewIpfs && (
+                <View style={styles.uploadedBadge}>
+                  <CheckCircle size={24} color={theme.colors.success} />
+                  <Text style={styles.uploadedText}>Uploaded</Text>
+                </View>
+              )}
+              <Image 
+                source={{ uri: firstViewImage.uri }} 
+                style={styles.image} 
+                contentFit="cover" 
               />
-            </View>
-            <Text style={styles.progressText}>
-              {Math.round(uploadProgress)}%
-            </Text>
-          </View>
-        )}
+            </TouchableOpacity>
+          )}
 
-        {uploadComplete && (
-          <View style={styles.successCard}>
-            <CheckCircle size={48} color={theme.colors.success} />
-            <Text style={styles.successTitle}>Upload Complete!</Text>
-            <Text style={styles.successText}>
-              Images uploaded to IPFS and metadata synced
-            </Text>
-            <View style={styles.syncBadge}>
-              <Text style={styles.syncBadgeText}>
-                Blockchain Sync Pending
-              </Text>
-            </View>
+          <View style={styles.inputContainer}>
+            <Text style={styles.label}>IPFS URL</Text>
+            <TextInput
+              style={[styles.input, styles.ipfsInput]}
+              value={firstViewIpfs}
+              onChangeText={setFirstViewIpfs}
+              placeholder="Click image to upload and get IPFS URL"
+              placeholderTextColor={theme.colors.textTertiary}
+              editable={false}
+              multiline
+            />
           </View>
-        )}
+        </View>
+
+        {/* Second View Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Second View</Text>
+          
+          {secondViewImage && (
+            <TouchableOpacity
+              style={styles.imageCard}
+              onPress={() => handleImageClick('second_view')}
+              disabled={isUploadingSecond || !!secondViewIpfs}
+              activeOpacity={0.8}
+            >
+              {isUploadingSecond && (
+                <View style={styles.uploadingOverlay}>
+                  <ActivityIndicator size="large" color={theme.colors.primary} />
+                  <Text style={styles.uploadingText}>Uploading to IPFS...</Text>
+                </View>
+              )}
+              {secondViewIpfs && (
+                <View style={styles.uploadedBadge}>
+                  <CheckCircle size={24} color={theme.colors.success} />
+                  <Text style={styles.uploadedText}>Uploaded</Text>
+                </View>
+              )}
+              <Image 
+                source={{ uri: secondViewImage.uri }} 
+                style={styles.image} 
+                contentFit="cover" 
+              />
+            </TouchableOpacity>
+          )}
+
+          <View style={styles.inputContainer}>
+            <Text style={styles.label}>IPFS URL</Text>
+            <TextInput
+              style={[styles.input, styles.ipfsInput]}
+              value={secondViewIpfs}
+              onChangeText={setSecondViewIpfs}
+              placeholder="Click image to upload and get IPFS URL"
+              placeholderTextColor={theme.colors.textTertiary}
+              editable={false}
+              multiline
+            />
+          </View>
+        </View>
+
+        {/* Submit Button */}
+        <TouchableOpacity
+          style={[
+            styles.submitButton,
+            (!batchId || !firstViewIpfs || !secondViewIpfs || isSubmitting) && styles.submitButtonDisabled
+          ]}
+          onPress={handleSubmit}
+          disabled={!batchId || !firstViewIpfs || !secondViewIpfs || isSubmitting}
+        >
+          {isSubmitting ? (
+            <>
+              <ActivityIndicator color={theme.colors.background} size="small" />
+              <Text style={styles.submitButtonText}>Submitting...</Text>
+            </>
+          ) : (
+            <>
+              <CheckCircle size={24} color={theme.colors.background} />
+              <Text style={styles.submitButtonText}>Submit to Database</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        {/* Info Card */}
+        <View style={styles.infoCard}>
+          <Text style={styles.infoText}>
+            💡 Click on images to upload to IPFS. Submit button will upload batch ID and both IPFS URLs to database.
+          </Text>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -261,145 +320,87 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: theme.fontSize.sm,
     color: theme.colors.textSecondary,
+    textAlign: 'center',
   },
   section: {
     marginBottom: theme.spacing.xl,
   },
   sectionTitle: {
-    fontSize: theme.fontSize.md,
+    fontSize: theme.fontSize.lg,
     fontWeight: '600' as const,
     color: theme.colors.text,
     marginBottom: theme.spacing.md,
   },
-  imagesGrid: {
-    gap: theme.spacing.md,
+  label: {
+    fontSize: theme.fontSize.sm,
+    fontWeight: '600' as const,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.sm,
+  },
+  input: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.borderRadius.md,
+    padding: theme.spacing.md,
+    fontSize: theme.fontSize.md,
+    color: theme.colors.text,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  ipfsInput: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  inputContainer: {
+    marginBottom: theme.spacing.md,
   },
   imageCard: {
     backgroundColor: theme.colors.card,
     borderRadius: theme.borderRadius.lg,
     overflow: 'hidden',
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: theme.colors.border,
+    marginBottom: theme.spacing.md,
+    position: 'relative',
+    minHeight: 200,
   },
   image: {
     width: '100%',
     height: 200,
   },
-  imageLabel: {
-    backgroundColor: theme.colors.background,
-    padding: theme.spacing.sm,
-  },
-  imageLabelText: {
-    fontSize: theme.fontSize.sm,
-    fontWeight: '600' as const,
-    color: theme.colors.text,
-    textAlign: 'center',
-  },
-  metadataCard: {
-    backgroundColor: theme.colors.card,
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.lg,
-    gap: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  metadataRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  metadataLabel: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.textSecondary,
-  },
-  metadataValue: {
-    fontSize: theme.fontSize.sm,
-    fontWeight: '600' as const,
-    color: theme.colors.text,
-    flex: 1,
-    textAlign: 'right',
-  },
-  uploadButton: {
-    flexDirection: 'row',
-    backgroundColor: theme.colors.primary,
-    padding: theme.spacing.md,
-    borderRadius: theme.borderRadius.md,
-    alignItems: 'center',
+  uploadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'center',
-    gap: theme.spacing.sm,
-    shadowColor: theme.colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  uploadButtonDisabled: {
-    opacity: 0.6,
-  },
-  uploadButtonText: {
-    fontSize: theme.fontSize.md,
-    fontWeight: 'bold' as const,
-    color: theme.colors.background,
-  },
-  progressContainer: {
-    marginTop: theme.spacing.lg,
-    gap: theme.spacing.sm,
-  },
-  progressStep: {
-    fontSize: theme.fontSize.sm,
-    color: theme.colors.text,
-    textAlign: 'center',
-    fontWeight: '600' as const,
-  },
-  progressBar: {
-    height: 8,
-    backgroundColor: theme.colors.card,
-    borderRadius: theme.borderRadius.sm,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: theme.colors.primary,
-  },
-  progressText: {
-    fontSize: theme.fontSize.sm,
-    fontWeight: '600' as const,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-  },
-  successCard: {
-    backgroundColor: theme.colors.card,
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.xl,
     alignItems: 'center',
-    gap: theme.spacing.md,
-    borderWidth: 2,
-    borderColor: theme.colors.success,
-    marginTop: theme.spacing.lg,
+    zIndex: 1,
+    gap: theme.spacing.sm,
   },
-  successTitle: {
-    fontSize: theme.fontSize.lg,
-    fontWeight: 'bold' as const,
-    color: theme.colors.success,
-  },
-  successText: {
+  uploadingText: {
+    color: theme.colors.background,
     fontSize: theme.fontSize.sm,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
+    fontWeight: '600' as const,
   },
-  syncBadge: {
-    backgroundColor: theme.colors.warning,
+  uploadedBadge: {
+    position: 'absolute',
+    top: theme.spacing.sm,
+    right: theme.spacing.sm,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.borderRadius.md,
-    marginTop: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    zIndex: 1,
   },
-  syncBadgeText: {
-    fontSize: theme.fontSize.xs,
+  uploadedText: {
+    color: theme.colors.success,
+    fontSize: theme.fontSize.sm,
     fontWeight: '600' as const,
-    color: theme.colors.background,
   },
   errorTitle: {
     fontSize: theme.fontSize.lg,
@@ -423,5 +424,36 @@ const styles = StyleSheet.create({
     fontSize: theme.fontSize.md,
     fontWeight: '600' as const,
     color: theme.colors.background,
+  },
+  submitButton: {
+    backgroundColor: theme.colors.primary,
+    padding: theme.spacing.lg,
+    borderRadius: theme.borderRadius.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.xl,
+  },
+  submitButtonDisabled: {
+    opacity: 0.5,
+  },
+  submitButtonText: {
+    fontSize: theme.fontSize.md,
+    fontWeight: 'bold' as const,
+    color: theme.colors.background,
+  },
+  infoCard: {
+    backgroundColor: theme.colors.card,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    marginTop: theme.spacing.lg,
+  },
+  infoText: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
   },
 });

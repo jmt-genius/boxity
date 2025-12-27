@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/GlassCard";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ interface BackendDifference {
   description?: string;
   severity?: string;
   confidence?: number;
+  view?: string;
   explainability?: string[];
   suggested_action?: string;
   tis_delta?: number;
@@ -58,11 +59,18 @@ interface BackendResponse {
   baseline_image_info?: ImageInfo;
   current_image_info?: ImageInfo;
   analysis_metadata?: AnalysisMetadata;
+  angle_results?: any[];
 }
 
 export default function IntegrityCheck() {
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
+
+  const [baselineAngle1, setBaselineAngle1] = useState<string | null>(null);
+  const [baselineAngle2, setBaselineAngle2] = useState<string | null>(null);
+  const [currentAngle1, setCurrentAngle1] = useState<string | null>(null);
+  const [currentAngle2, setCurrentAngle2] = useState<string | null>(null);
+
   const [differences, setDifferences] = useState<DifferenceResult[] | null>(
     null
   );
@@ -72,7 +80,7 @@ export default function IntegrityCheck() {
   const { toast } = useToast();
 
   const handleImageUpload = (
-    e: React.ChangeEvent<HTMLInputElement>,
+    e: ChangeEvent<HTMLInputElement>,
     type: "before" | "after"
   ) => {
     const file = e.target.files?.[0];
@@ -92,6 +100,32 @@ export default function IntegrityCheck() {
     }
   };
 
+  const handleActualImageUpload = (
+    e: ChangeEvent<HTMLInputElement>,
+    type: "baseline1" | "baseline2" | "current1" | "current2"
+  ) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const value = reader.result as string;
+        if (type === "baseline1") {
+          setBaselineAngle1(value);
+        } else if (type === "baseline2") {
+          setBaselineAngle2(value);
+        } else if (type === "current1") {
+          setCurrentAngle1(value);
+        } else {
+          setCurrentAngle2(value);
+        }
+
+        setDifferences(null);
+        setTrustScore(null);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const loadDemoMode = () => {
     setIsDemoMode(true);
     // Demo images - using placeholder data URIs
@@ -102,6 +136,11 @@ export default function IntegrityCheck() {
 
     setBeforeImage(demoBeforeImage);
     setAfterImage(demoAfterImage);
+
+    setBaselineAngle1(null);
+    setBaselineAngle2(null);
+    setCurrentAngle1(null);
+    setCurrentAngle2(null);
     // Reset previous analysis results when loading demo mode
     setDifferences(null);
     setTrustScore(null);
@@ -113,13 +152,24 @@ export default function IntegrityCheck() {
   };
 
   const checkIntegrity = () => {
-    if (!beforeImage || !afterImage) {
-      toast({
-        title: "Missing images",
-        description: "Please upload both before and after images",
-        variant: "destructive",
-      });
-      return;
+    if (isDemoMode) {
+      if (!beforeImage || !afterImage) {
+        toast({
+          title: "Missing images",
+          description: "Please upload both before and after images",
+          variant: "destructive",
+        });
+        return;
+      }
+    } else {
+      if (!baselineAngle1 || !baselineAngle2 || !currentAngle1 || !currentAngle2) {
+        toast({
+          title: "Missing images",
+          description: "Please upload 2 baseline images and 2 current images",
+          variant: "destructive",
+        });
+        return;
+      }
     }
 
     setIsAnalyzing(true);
@@ -170,8 +220,10 @@ export default function IntegrityCheck() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        baseline_b64: beforeImage,
-        current_b64: afterImage,
+        baseline_angle1: baselineAngle1,
+        baseline_angle2: baselineAngle2,
+        current_angle1: currentAngle1,
+        current_angle2: currentAngle2,
       }),
     })
       .then(async (res) => {
@@ -184,7 +236,7 @@ export default function IntegrityCheck() {
         // Map backend schema to UI DifferenceResult
         const mapped: DifferenceResult[] = Array.isArray(data?.differences)
           ? data.differences.map((d: BackendDifference) => ({
-              location: d?.region || "Unknown region",
+              location: `${d?.view ? `${d.view.replace("_", " ")} - ` : ""}${d?.region || "Unknown region"}`,
               severity: (String(d?.severity || "LOW").toLowerCase() ===
               "critical"
                 ? "high"
@@ -213,12 +265,11 @@ export default function IntegrityCheck() {
         setDifferences(mapped);
         setTrustScore(trustScoreData);
         // Enhanced toast with risk assessment
-        const riskLevel =
-          trustScoreData.aggregate_tis >= 80
-            ? "SAFE"
-            : trustScoreData.aggregate_tis >= 40
-            ? "MODERATE RISK"
-            : "HIGH RISK";
+        const riskLevel = String(trustScoreData.overall_assessment || "").toUpperCase().includes("SAFE")
+          ? "SAFE"
+          : String(trustScoreData.overall_assessment || "").toUpperCase().includes("MODERATE")
+          ? "MODERATE RISK"
+          : "HIGH RISK";
 
         toast({
           title: "Analysis complete",
@@ -272,7 +323,7 @@ export default function IntegrityCheck() {
               transition={{ duration: 0.6, delay: 0.4 }}
               className="text-muted-foreground text-base mb-4"
             >
-              Upload before and after images to detect tampering and damage
+              Upload 2 baseline images and 2 current images (2 angles each) to detect tampering and damage
             </motion.p>
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
@@ -290,136 +341,312 @@ export default function IntegrityCheck() {
             </motion.div>
           </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.3 }}
-            className="grid md:grid-cols-2 gap-6 mb-8"
-          >
-            {/* Before Section */}
+          {isDemoMode ? (
             <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.6, delay: 0.5 }}
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.3 }}
+              className="grid md:grid-cols-2 gap-6 mb-8"
             >
-              <GlassCard
-                className="p-5 hover:shadow-xl transition-all duration-300"
-                id="before-upload"
+              {/* Before Section */}
+              <motion.div
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.6, delay: 0.5 }}
               >
+                <GlassCard
+                  className="p-5 hover:shadow-xl transition-all duration-300"
+                  id="before-upload"
+                >
+                  <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-green-500" />
+                    Before (Baseline)
+                  </h3>
+                  <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-primary/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-primary/50 transition-all duration-300">
+                    {beforeImage ? (
+                      <motion.img
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.5 }}
+                        src={beforeImage}
+                        alt="Before"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.2 }}
+                        className="text-center p-6"
+                      >
+                        <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-primary transition-colors duration-300" />
+                        <p className="text-muted-foreground text-sm">
+                          Upload baseline image
+                        </p>
+                      </motion.div>
+                    )}
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleImageUpload(e, "before")}
+                    className="hidden"
+                    id="before-input"
+                  />
+                  <Button
+                    onClick={() =>
+                      document.getElementById("before-input")?.click()
+                    }
+                    variant="outline"
+                    size="sm"
+                    className="w-full hover:bg-primary/10 transition-all duration-300"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Upload Before Image
+                  </Button>
+                  <div className="h-40 mt-4">
+                    <Box3D state="sealed" />
+                  </div>
+                </GlassCard>
+              </motion.div>
+
+              {/* After Section */}
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.6, delay: 0.7 }}
+              >
+                <GlassCard
+                  className="p-5 hover:shadow-xl transition-all duration-300"
+                  id="after-upload"
+                >
+                  <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-orange-500" />
+                    After (Current)
+                  </h3>
+                  <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-orange-500/50 transition-all duration-300">
+                    {afterImage ? (
+                      <motion.img
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.5 }}
+                        src={afterImage}
+                        alt="After"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.2 }}
+                        className="text-center p-6"
+                      >
+                        <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-orange-500 transition-colors duration-300" />
+                        <p className="text-muted-foreground text-sm">
+                          Upload current image
+                        </p>
+                      </motion.div>
+                    )}
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleImageUpload(e, "after")}
+                    className="hidden"
+                    id="after-input"
+                  />
+                  <Button
+                    onClick={() =>
+                      document.getElementById("after-input")?.click()
+                    }
+                    variant="outline"
+                    size="sm"
+                    className="w-full hover:bg-orange-500/10 transition-all duration-300"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Upload After Image
+                  </Button>
+                  <div className="h-40 mt-4">
+                    <Box3D state={differences ? "damaged" : "in-transit"} />
+                  </div>
+                </GlassCard>
+              </motion.div>
+            </motion.div>
+          ) : (
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.3 }}
+              className="grid md:grid-cols-2 gap-6 mb-8"
+            >
+              {/* Baseline Angle 1 */}
+              <GlassCard className="p-5 hover:shadow-xl transition-all duration-300">
                 <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
                   <CheckCircle className="w-4 h-4 text-green-500" />
-                  Before (Baseline)
+                  Baseline (Angle 1)
                 </h3>
                 <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-primary/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-primary/50 transition-all duration-300">
-                  {beforeImage ? (
+                  {baselineAngle1 ? (
                     <motion.img
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ duration: 0.5 }}
-                      src={beforeImage}
-                      alt="Before"
+                      src={baselineAngle1}
+                      alt="Baseline angle 1"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
                   ) : (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: 0.2 }}
-                      className="text-center p-6"
-                    >
+                    <div className="text-center p-6">
                       <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-primary transition-colors duration-300" />
-                      <p className="text-muted-foreground text-sm">
-                        Upload baseline image
-                      </p>
-                    </motion.div>
+                      <p className="text-muted-foreground text-sm">Upload baseline angle 1</p>
+                    </div>
                   )}
                 </div>
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(e) => handleImageUpload(e, "before")}
+                  onChange={(e) => handleActualImageUpload(e, "baseline1")}
                   className="hidden"
-                  id="before-input"
+                  id="baseline-1-input"
                 />
                 <Button
-                  onClick={() =>
-                    document.getElementById("before-input")?.click()
-                  }
+                  onClick={() => document.getElementById("baseline-1-input")?.click()}
                   variant="outline"
                   size="sm"
                   className="w-full hover:bg-primary/10 transition-all duration-300"
                 >
                   <Upload className="w-4 h-4 mr-2" />
-                  Upload Before Image
+                  Upload Baseline 1
                 </Button>
-                <div className="h-40 mt-4">
-                  <Box3D state="sealed" />
-                </div>
               </GlassCard>
-            </motion.div>
 
-            {/* After Section */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.6, delay: 0.7 }}
-            >
-              <GlassCard
-                className="p-5 hover:shadow-xl transition-all duration-300"
-                id="after-upload"
-              >
+              {/* Baseline Angle 2 */}
+              <GlassCard className="p-5 hover:shadow-xl transition-all duration-300">
                 <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-orange-500" />
-                  After (Current)
+                  <CheckCircle className="w-4 h-4 text-green-500" />
+                  Baseline (Angle 2)
                 </h3>
-                <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-orange-500/50 transition-all duration-300">
-                  {afterImage ? (
+                <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-primary/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-primary/50 transition-all duration-300">
+                  {baselineAngle2 ? (
                     <motion.img
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ duration: 0.5 }}
-                      src={afterImage}
-                      alt="After"
+                      src={baselineAngle2}
+                      alt="Baseline angle 2"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
                   ) : (
-                    <motion.div
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: 0.2 }}
-                      className="text-center p-6"
-                    >
-                      <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-orange-500 transition-colors duration-300" />
-                      <p className="text-muted-foreground text-sm">
-                        Upload current image
-                      </p>
-                    </motion.div>
+                    <div className="text-center p-6">
+                      <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-primary transition-colors duration-300" />
+                      <p className="text-muted-foreground text-sm">Upload baseline angle 2</p>
+                    </div>
                   )}
                 </div>
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(e) => handleImageUpload(e, "after")}
+                  onChange={(e) => handleActualImageUpload(e, "baseline2")}
                   className="hidden"
-                  id="after-input"
+                  id="baseline-2-input"
                 />
                 <Button
-                  onClick={() =>
-                    document.getElementById("after-input")?.click()
-                  }
+                  onClick={() => document.getElementById("baseline-2-input")?.click()}
+                  variant="outline"
+                  size="sm"
+                  className="w-full hover:bg-primary/10 transition-all duration-300"
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload Baseline 2
+                </Button>
+              </GlassCard>
+
+              {/* Current Angle 1 */}
+              <GlassCard className="p-5 hover:shadow-xl transition-all duration-300">
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-500" />
+                  Current (Angle 1)
+                </h3>
+                <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-orange-500/50 transition-all duration-300">
+                  {currentAngle1 ? (
+                    <motion.img
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.5 }}
+                      src={currentAngle1}
+                      alt="Current angle 1"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="text-center p-6">
+                      <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-orange-500 transition-colors duration-300" />
+                      <p className="text-muted-foreground text-sm">Upload current angle 1</p>
+                    </div>
+                  )}
+                </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleActualImageUpload(e, "current1")}
+                  className="hidden"
+                  id="current-1-input"
+                />
+                <Button
+                  onClick={() => document.getElementById("current-1-input")?.click()}
                   variant="outline"
                   size="sm"
                   className="w-full hover:bg-orange-500/10 transition-all duration-300"
                 >
                   <Upload className="w-4 h-4 mr-2" />
-                  Upload After Image
+                  Upload Current 1
+                </Button>
+              </GlassCard>
+
+              {/* Current Angle 2 */}
+              <GlassCard className="p-5 hover:shadow-xl transition-all duration-300">
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-500" />
+                  Current (Angle 2)
+                </h3>
+                <div className="aspect-[4/3] bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex flex-col items-center justify-center mb-4 overflow-hidden group hover:border-orange-500/50 transition-all duration-300">
+                  {currentAngle2 ? (
+                    <motion.img
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.5 }}
+                      src={currentAngle2}
+                      alt="Current angle 2"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="text-center p-6">
+                      <Upload className="w-10 h-10 mx-auto mb-3 text-muted-foreground group-hover:text-orange-500 transition-colors duration-300" />
+                      <p className="text-muted-foreground text-sm">Upload current angle 2</p>
+                    </div>
+                  )}
+                </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleActualImageUpload(e, "current2")}
+                  className="hidden"
+                  id="current-2-input"
+                />
+                <Button
+                  onClick={() => document.getElementById("current-2-input")?.click()}
+                  variant="outline"
+                  size="sm"
+                  className="w-full hover:bg-orange-500/10 transition-all duration-300"
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload Current 2
                 </Button>
                 <div className="h-40 mt-4">
                   <Box3D state={differences ? "damaged" : "in-transit"} />
                 </div>
               </GlassCard>
             </motion.div>
-          </motion.div>
+          )}
 
           {/* Check Integrity Button */}
           <motion.div
@@ -540,12 +767,12 @@ export default function IntegrityCheck() {
                           : "bg-red-500/20 text-red-300 border border-red-500/30"
                       }`}
                     >
-                      {trustScore.aggregate_tis >= 80 ? (
+                      {String(trustScore.overall_assessment || "").toUpperCase().includes("SAFE") ? (
                         <>
                           <CheckCircle className="w-4 h-4 mr-2" />
                           SAFE - Product integrity maintained
                         </>
-                      ) : trustScore.aggregate_tis >= 40 ? (
+                      ) : String(trustScore.overall_assessment || "").toUpperCase().includes("MODERATE") ? (
                         <>
                           <AlertTriangle className="w-4 h-4 mr-2" />
                           MODERATE RISK - Review required

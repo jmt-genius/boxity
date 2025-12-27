@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { createClient } from "@insforge/sdk";
 import {
   QrCode,
   ScanLine,
@@ -20,10 +22,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -68,8 +79,18 @@ const roles: ReadonlyArray<string> = [
   "Other",
 ];
 
+type InsforgeBatchRow = {
+  id: string;
+  batch_id: string;
+  first_view_ipfs: string;
+  second_view_ipfs: string;
+  created_at: string;
+  approved: boolean;
+};
+
 export default function LogEvent(): JSX.Element {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [demoBatches, setDemoBatches] = useState<DemoBatch[]>([]);
   const [contractBatches, setContractBatches] = useState<ContractBatch[]>([]);
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
@@ -78,7 +99,8 @@ export default function LogEvent(): JSX.Element {
   const [actor, setActor] = useState<string>("");
   const [role, setRole] = useState<string>("");
   const [note, setNote] = useState<string>("");
-  const [image, setImage] = useState<string>("");
+  const [imageAngle1, setImageAngle1] = useState<string>("");
+  const [imageAngle2, setImageAngle2] = useState<string>("");
 
   const [scanOpen, setScanOpen] = useState<boolean>(false);
   const [lastScan, setLastScan] = useState<string>("");
@@ -88,12 +110,121 @@ export default function LogEvent(): JSX.Element {
   const [justScanned, setJustScanned] = useState<boolean>(false);
   const [isLogging, setIsLogging] = useState<boolean>(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
-  const [isCheckingIntegrity, setIsCheckingIntegrity] = useState(false);
-  const [integrityResult, setIntegrityResult] = useState<{passed: boolean, tisScore?: number, differences?: any[], trustScore?: any} | null>(null);
-  const [uploadedImageFile, setUploadedImageFile] = useState<File | null>(null);
-  const [uploadedImagePreview, setUploadedImagePreview] = useState<string | null>(null);
+  const [isCheckingIntegrityAngle1, setIsCheckingIntegrityAngle1] = useState(false);
+  const [integrityResultAngle1, setIntegrityResultAngle1] = useState<{passed: boolean, tisScore?: number, differences?: any[], trustScore?: any} | null>(null);
+  const [uploadedImageFileAngle1, setUploadedImageFileAngle1] = useState<File | null>(null);
+  const [uploadedImagePreviewAngle1, setUploadedImagePreviewAngle1] = useState<string | null>(null);
+  const [isCheckingIntegrityAngle2, setIsCheckingIntegrityAngle2] = useState(false);
+  const [integrityResultAngle2, setIntegrityResultAngle2] = useState<{passed: boolean, tisScore?: number, differences?: any[], trustScore?: any} | null>(null);
+  const [uploadedImageFileAngle2, setUploadedImageFileAngle2] = useState<File | null>(null);
+  const [uploadedImagePreviewAngle2, setUploadedImagePreviewAngle2] = useState<string | null>(null);
+
+  const [selectedInsforgeBatch, setSelectedInsforgeBatch] = useState<InsforgeBatchRow | null>(null);
+  const [insforgeFirstViewUrl, setInsforgeFirstViewUrl] = useState<string>("");
+  const [insforgeSecondViewUrl, setInsforgeSecondViewUrl] = useState<string>("");
+
+  const INSFORGE_BASE_URL = import.meta.env.VITE_INSFORGE_BASE_URL as string | undefined;
+  const INSFORGE_ANON_KEY = import.meta.env.VITE_INSFORGE_ANON_KEY as string | undefined;
 
   const JWT = import.meta.env.VITE_PINATA_JWT as string;
+
+  const IMAGE_PACK_DELIMITER = "||";
+
+  const unpackImages = (packed: string): string[] => {
+    const raw = String(packed || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(IMAGE_PACK_DELIMITER)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
+  const packImages = (a: string, b: string): string => {
+    const out = [String(a || "").trim(), String(b || "").trim()].filter(Boolean);
+    return out.join(IMAGE_PACK_DELIMITER);
+  };
+
+  const ipfsToHttp = (uri: string): string => {
+    const value = String(uri || "").trim();
+    if (!value) return "";
+    if (value.startsWith("ipfs://")) {
+      const cid = value.replace("ipfs://", "");
+      return `https://ipfs.io/ipfs/${cid}`;
+    }
+    return value;
+  };
+
+  const insforge = useMemo(() => {
+    if (!INSFORGE_BASE_URL) return null;
+    return createClient({
+      baseUrl: INSFORGE_BASE_URL,
+      anonKey: INSFORGE_ANON_KEY,
+    });
+  }, [INSFORGE_BASE_URL, INSFORGE_ANON_KEY]);
+
+  const fetchPendingInsforgeBatches = async (): Promise<InsforgeBatchRow[]> => {
+    if (!insforge) {
+      return [];
+    }
+
+    const { data, error } = await insforge.database
+      .from("batches")
+      .select("id,batch_id,first_view_ipfs,second_view_ipfs,created_at,approved")
+      .eq("approved", false)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      throw new Error((error as any)?.message || "InsForge query failed");
+    }
+
+    return (data as InsforgeBatchRow[] | null) ?? [];
+  };
+
+  const {
+    data: pendingInsforgeBatches = [],
+    isLoading: isLoadingPendingInsforgeBatches,
+    isFetching: isFetchingPendingInsforgeBatches,
+    error: pendingInsforgeBatchesError,
+    refetch: refetchPendingInsforgeBatches,
+  } = useQuery({
+    queryKey: ["insforge", "batches", "pending"],
+    queryFn: fetchPendingInsforgeBatches,
+    enabled: Boolean(insforge),
+    refetchInterval: 4000,
+    refetchOnWindowFocus: true,
+  });
+
+  const approveInsforgeBatchMutation = useMutation({
+    mutationFn: async (row: InsforgeBatchRow) => {
+      if (!insforge) {
+        throw new Error("Missing VITE_INSFORGE_BASE_URL");
+      }
+
+      const { error } = await insforge.database.from("batches").update({ approved: true }).eq("id", row.id);
+      if (error) {
+        throw new Error((error as any)?.message || "Approve failed");
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["insforge", "batches", "pending"] });
+    },
+  });
+
+  const rejectInsforgeBatchMutation = useMutation({
+    mutationFn: async (row: InsforgeBatchRow) => {
+      if (!insforge) {
+        throw new Error("Missing VITE_INSFORGE_BASE_URL");
+      }
+
+      const { error } = await insforge.database.from("batches").delete().eq("id", row.id);
+      if (error) {
+        throw new Error((error as any)?.message || "Reject failed");
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["insforge", "batches", "pending"] });
+    },
+  });
 
   const handlePinataUpload = async (file: File): Promise<string> => {
     setIsUploadingImage(true);
@@ -119,9 +250,9 @@ export default function LogEvent(): JSX.Element {
     }
   };
 
-  const checkIntegrity = async (beforeImageUrl: string, afterImageFile: File) => {
-    setIsCheckingIntegrity(true);
-    setIntegrityResult(null);
+  const checkIntegrityAngle1 = async (beforeImageUrl: string, afterImageFile: File) => {
+    setIsCheckingIntegrityAngle1(true);
+    setIntegrityResultAngle1(null);
     
     try {
       // Convert file to base64
@@ -172,7 +303,7 @@ export default function LogEvent(): JSX.Element {
         // Allow upload if TIS score is 40 or above
         const passed = tisScore >= 40;
         
-        setIntegrityResult({ passed, tisScore, differences: mapped, trustScore: trustScoreData });
+        setIntegrityResultAngle1({ passed, tisScore, differences: mapped, trustScore: trustScoreData });
         
         if (passed) {
           toast({
@@ -196,9 +327,84 @@ export default function LogEvent(): JSX.Element {
         description: "Failed to perform integrity check",
         variant: "destructive",
       });
-      setIntegrityResult({ passed: false, tisScore: 0, differences: [], trustScore: null });
+      setIntegrityResultAngle1({ passed: false, tisScore: 0, differences: [], trustScore: null });
     } finally {
-      setIsCheckingIntegrity(false);
+      setIsCheckingIntegrityAngle1(false);
+    }
+  };
+
+  const checkIntegrityAngle2 = async (beforeImageUrl: string, afterImageFile: File) => {
+    setIsCheckingIntegrityAngle2(true);
+    setIntegrityResultAngle2(null);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const afterImageBase64 = reader.result as string;
+        const API_BASE = (import.meta.env.VITE_BACKEND_URL as string) || "/api";
+        const response = await fetch(`${API_BASE}/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseline_b64: beforeImageUrl,
+            current_b64: afterImageBase64,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Analyzer returned ${response.status}`);
+        }
+
+        const data = await response.json();
+        const differences = data.differences || [];
+        const mapped = differences.map((d: any) => ({
+          location: d?.region || "Unknown region",
+          severity: (String(d?.severity || "LOW").toLowerCase() === "critical"
+            ? "high"
+            : String(d?.severity || "LOW").toLowerCase() === "high"
+            ? "high"
+            : String(d?.severity || "LOW").toLowerCase() === "medium"
+            ? "medium"
+            : "low") as "low" | "medium" | "high",
+          description: d?.description || "",
+        }));
+
+        const tisScore = data.aggregate_tis || 100;
+        const trustScoreData = {
+          aggregate_tis: tisScore,
+          overall_assessment: data.overall_assessment || "SAFE",
+          confidence_overall: data.confidence_overall || 0.8,
+          notes: data.notes || "Analysis completed",
+        };
+
+        const passed = tisScore >= 40;
+
+        setIntegrityResultAngle2({ passed, tisScore, differences: mapped, trustScore: trustScoreData });
+
+        if (passed) {
+          toast({
+            title: "Integrity Check Passed",
+            description: `TIS Score: ${tisScore}% (≥40 required). Found ${mapped.length} differences.`,
+          });
+        } else {
+          toast({
+            title: "Integrity Check Failed",
+            description: `TIS Score: ${tisScore}% (<40 required). Upload blocked.`,
+            variant: "destructive",
+          });
+        }
+      };
+
+      reader.readAsDataURL(afterImageFile);
+    } catch (error) {
+      console.error('Integrity check error:', error);
+      toast({
+        title: "Integrity Check Error",
+        description: "Failed to perform integrity check",
+        variant: "destructive",
+      });
+      setIntegrityResultAngle2({ passed: false, tisScore: 0, differences: [], trustScore: null });
+    } finally {
+      setIsCheckingIntegrityAngle2(false);
     }
   };
 
@@ -241,8 +447,25 @@ export default function LogEvent(): JSX.Element {
   };
 
   const selectedBatch = useMemo<ContractBatch | DemoBatch | undefined>(
-    () => contractBatches.find((b) => b.id === batchId) || demoBatches.find((b) => b.id === batchId),
-    [contractBatches, demoBatches, batchId]
+    () => {
+      const contract = contractBatches.find((b) => b.id === batchId);
+      if (contract) return contract;
+      const demo = demoBatches.find((b) => b.id === batchId);
+      if (demo) return demo;
+      if (selectedInsforgeBatch && selectedInsforgeBatch.batch_id === batchId) {
+        return {
+          id: selectedInsforgeBatch.batch_id,
+          productName: "Pending Batch",
+          sku: "",
+          origin: "InsForge",
+          createdAt: selectedInsforgeBatch.created_at,
+          baselineImage: "",
+          events: [],
+        } as unknown as DemoBatch;
+      }
+      return undefined;
+    },
+    [contractBatches, demoBatches, batchId, selectedInsforgeBatch]
   );
 
   const isContractBatch = useMemo<boolean>(
@@ -255,6 +478,15 @@ export default function LogEvent(): JSX.Element {
       toast({
         title: "Missing info",
         description: "Please fill all required fields",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!imageAngle1 || !imageAngle2) {
+      toast({
+        title: "Missing image angle",
+        description: "Please provide both Angle 1 and Angle 2 images.",
         variant: "destructive",
       });
       return;
@@ -284,13 +516,14 @@ export default function LogEvent(): JSX.Element {
       try {
         // Generate event hash for blockchain
         const eventHash = generateHash(`${batchId}${actor}${Date.now()}`);
-        
+
         const tx = await web3Service.logEvent(
           batchId,
           actor,
           role,
           note,
-          image || '',
+          imageAngle1 || '',
+          imageAngle2 || '',
           eventHash
         );
 
@@ -313,7 +546,8 @@ export default function LogEvent(): JSX.Element {
           setActor("");
           setRole("");
           setNote("");
-          setImage("");
+          setImageAngle1("");
+          setImageAngle2("");
         }
       } catch (error: any) {
         console.error('Event logging error:', error);
@@ -345,7 +579,7 @@ export default function LogEvent(): JSX.Element {
       role,
       timestamp: new Date().toISOString(),
       note,
-      image: image || undefined,
+      image: packImages(imageAngle1, imageAngle2) || undefined,
       hash: generateHash(`${batchId}${actor}${Date.now()}`),
       ledgerRef: generateLedgerRef(),
     };
@@ -367,7 +601,8 @@ export default function LogEvent(): JSX.Element {
     setActor("");
     setRole("");
     setNote("");
-    setImage("");
+    setImageAngle1("");
+    setImageAngle2("");
   };
 
   const applyPayload = (decodedText: string): void => {
@@ -377,10 +612,10 @@ export default function LogEvent(): JSX.Element {
 
     // Check if it's an image URL first
     if (decodedText.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-      setImage(decodedText);
+      setImageAngle1(decodedText);
       toast({
         title: "Image URL Scanned",
-        description: "Image URL has been set from QR code",
+        description: "Angle 1 image URL has been set from QR code",
       });
       return;
     }
@@ -434,8 +669,8 @@ export default function LogEvent(): JSX.Element {
       );
     }
     if (payload.image) {
-      setImage(payload.image);
-      changed.push("Image URL → set");
+      setImageAngle1(payload.image);
+      changed.push("Angle 1 Image URL → set");
     }
 
     toast({
@@ -493,7 +728,7 @@ export default function LogEvent(): JSX.Element {
     {
       target: "log-event-form",
       title: "Log Event",
-      description: "Fill in event details and attach an image to record this step in the supply chain",
+      description: "Fill in event details and attach both angle images to record this step in the supply chain",
       position: "right" as const,
     },
   ];
@@ -586,6 +821,35 @@ export default function LogEvent(): JSX.Element {
                     <SelectValue placeholder="Select a batch or scan QR" />
                   </SelectTrigger>
                   <SelectContent>
+                    {(pendingInsforgeBatches.length > 0 || selectedInsforgeBatch) && (
+                      <>
+                        <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                          Pending (InsForge)
+                        </div>
+                        {selectedInsforgeBatch && (
+                          <SelectItem key={selectedInsforgeBatch.id} value={selectedInsforgeBatch.batch_id}>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-xs bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">
+                                INSFORGE
+                              </span>
+                              {selectedInsforgeBatch.batch_id}
+                            </div>
+                          </SelectItem>
+                        )}
+                        {pendingInsforgeBatches
+                          .filter((b) => b.id !== selectedInsforgeBatch?.id)
+                          .map((batch) => (
+                            <SelectItem key={batch.id} value={batch.batch_id}>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">
+                                  INSFORGE
+                                </span>
+                                {batch.batch_id}
+                              </div>
+                            </SelectItem>
+                          ))}
+                      </>
+                    )}
                     {/* Contract Batches */}
                     {contractBatches.length > 0 && (
                       <>
@@ -693,314 +957,370 @@ export default function LogEvent(): JSX.Element {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="image">Image URL (Optional)</Label>
-                <div className="flex gap-2 items-center">
-                  <Input
-                    id="image"
-                    placeholder="/demo/image.jpg or IPFS url"
-                    value={image}
-                    onChange={(e) => setImage(e.target.value)}
-                    style={{ flex: 1 }}
-                    disabled={isUploadingImage}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const input = document.createElement('input');
-                      input.type = 'file';
-                      input.accept = 'image/*';
-                      input.onchange = async (e) => {
-                        const file = (e.target as HTMLInputElement).files?.[0];
-                        if (file) {
-                          setUploadedImageFile(file);
-                          // Create preview
-                          const reader = new FileReader();
-                          reader.onload = () => {
-                            setUploadedImagePreview(reader.result as string);
-                          };
-                          reader.readAsDataURL(file);
-                          // Don't upload to IPFS yet, wait for integrity check
-                          toast({ 
-                            title: "Image Selected", 
-                            description: "Click 'Check Integrity' to verify before uploading to blockchain." 
-                          });
-                        }
-                      };
-                      input.click();
-                    }}
-                    disabled={isUploadingImage}
-                    className="gap-2"
-                  >
-                    {isUploadingImage ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Uploading...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-4 w-4" />
-                        Choose File
-                      </>
-                    )}
-                  </Button>
-                </div>
-                
-                {/* Integrity Check Section */}
-                {uploadedImageFile && selectedBatch && (
-                  <div className="mt-4 p-4 border rounded-lg bg-muted/50">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h4 className="font-semibold text-sm">Integrity Check Required</h4>
-                        <p className="text-xs text-muted-foreground">
-                          Compare uploaded image with baseline image from batch: {selectedBatch.id}
-                        </p>
-                      </div>
-                      <Button
-                        onClick={() => {
-                          if (selectedBatch && uploadedImageFile) {
-                            checkIntegrity(selectedBatch.baselineImage, uploadedImageFile);
-                          }
-                        }}
-                        disabled={isCheckingIntegrity || !selectedBatch?.baselineImage}
-                        size="sm"
-                        className="gap-2"
-                      >
-                        {isCheckingIntegrity ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Checking...
-                          </>
-                        ) : (
-                          <>
-                            <ShieldCheck className="h-4 w-4" />
-                            Check Integrity
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                    
-                    {/* Side-by-side Image Comparison */}
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                      {/* Baseline Image */}
-                      <div>
-                        <h5 className="text-sm font-medium mb-2 flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4 text-green-500" />
-                          Baseline Image
-                        </h5>
-                        <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
-                          {selectedBatch.baselineImage ? (
-                            <img
-                              src={selectedBatch.baselineImage}
-                              alt="Baseline"
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="text-center p-4">
-                              <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                              <p className="text-xs text-muted-foreground">No baseline image</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      
-                      {/* Uploaded Image */}
-                      <div>
-                        <h5 className="text-sm font-medium mb-2 flex items-center gap-2">
-                          <AlertTriangle className="h-4 w-4 text-orange-500" />
-                          Uploaded Image
-                        </h5>
-                        <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
-                          {uploadedImagePreview ? (
-                            <img
-                              src={uploadedImagePreview}
-                              alt="Uploaded"
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="text-center p-4">
-                              <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                              <p className="text-xs text-muted-foreground">No image selected</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Integrity Result */}
-                    {integrityResult && (
-                      <div className={`p-4 rounded-lg border ${
-                        integrityResult.passed 
-                          ? 'bg-green-50 border-green-200' 
-                          : 'bg-red-50 border-red-200'
-                      }`}>
-                        <div className="text-center mb-4">
-                          <h4 className="text-lg font-bold mb-3 flex items-center justify-center gap-2">
-                            <CheckCircle2 className="w-5 h-5" />
-                            Trust Identity Score
-                          </h4>
+                <Label>Current Images (2 angles)</Label>
 
-                          {/* TIS Score Circle */}
-                          <div className="relative inline-block mb-4">
-                            <div className="w-20 h-20 rounded-full border-4 border-secondary/20 flex items-center justify-center">
-                              <svg
-                                className="w-20 h-20 absolute inset-0 transform -rotate-90"
-                                viewBox="0 0 100 100"
-                              >
-                                <circle
-                                  cx="50"
-                                  cy="50"
-                                  r="40"
-                                  stroke="currentColor"
-                                  strokeWidth="6"
-                                  fill="none"
-                                  className="text-secondary/20"
-                                />
-                                <circle
-                                  cx="50"
-                                  cy="50"
-                                  r="40"
-                                  stroke="currentColor"
-                                  strokeWidth="6"
-                                  fill="none"
-                                  strokeDasharray={`${2 * Math.PI * 40}`}
-                                  strokeDashoffset={`${
-                                    2 *
-                                    Math.PI *
-                                    40 *
-                                    (1 - (integrityResult.tisScore || 0) / 100)
-                                  }`}
-                                  className={
-                                    (integrityResult.tisScore || 0) >= 80
-                                      ? "text-green-500"
-                                      : (integrityResult.tisScore || 0) >= 40
-                                      ? "text-orange-500"
-                                      : "text-red-500"
-                                  }
-                                  strokeLinecap="round"
-                                />
-                              </svg>
-                              <div
-                                className={`w-16 h-16 rounded-full flex items-center justify-center text-lg font-bold ${
-                                  (integrityResult.tisScore || 0) >= 80
-                                    ? "bg-green-500/20 text-green-400 border-2 border-green-500/30"
-                                    : (integrityResult.tisScore || 0) >= 40
-                                    ? "bg-orange-500/20 text-orange-400 border-2 border-orange-500/30"
-                                    : "bg-red-500/20 text-red-400 border-2 border-red-500/30"
-                                }`}
-                              >
-                                {integrityResult.tisScore || 0}%
-                              </div>
-                            </div>
-                          </div>
+                {(() => {
+                  // Handle both contract batches (firstViewBaseline/secondViewBaseline) and demo batches (baselineImage)
+                  let baselineAngle1 = "";
+                  let baselineAngle2 = "";
+                  
+                  if (isContractBatch && selectedBatch) {
+                    const contractBatch = selectedBatch as ContractBatch;
+                    baselineAngle1 = contractBatch.firstViewBaseline || "";
+                    baselineAngle2 = contractBatch.secondViewBaseline || "";
+                  } else if (selectedBatch) {
+                    const demoBatch = selectedBatch as DemoBatch;
+                    const baseline = demoBatch.baselineImage || "";
+                    const baselineUrls = unpackImages(baseline);
+                    baselineAngle1 = baselineUrls[0] || baseline;
+                    baselineAngle2 = baselineUrls[1] || baselineUrls[0] || baseline;
+                  }
 
-                          {/* Risk Assessment */}
-                          <div className="space-y-2">
-                            <div
-                              className={`inline-flex items-center px-3 py-2 rounded-full text-sm font-medium ${
-                                (integrityResult.tisScore || 0) >= 80
-                                  ? "bg-green-500/20 text-green-300 border border-green-500/30"
-                                  : (integrityResult.tisScore || 0) >= 40
-                                  ? "bg-orange-500/20 text-orange-300 border border-orange-500/30"
-                                  : "bg-red-500/20 text-red-300 border border-red-500/30"
-                              }`}
-                            >
-                              {(integrityResult.tisScore || 0) >= 80 ? (
-                                <>
-                                  <CheckCircle2 className="w-4 h-4 mr-2" />
-                                  SAFE - Product integrity maintained
-                                </>
-                              ) : (integrityResult.tisScore || 0) >= 40 ? (
-                                <>
-                                  <AlertTriangle className="w-4 h-4 mr-2" />
-                                  MODERATE RISK - Review required
-                                </>
-                              ) : (
-                                <>
-                                  <AlertTriangle className="w-4 h-4 mr-2" />
-                                  HIGH RISK - Upload blocked
-                                </>
-                              )}
-                            </div>
+                  const blockSubmitForAngle1 = Boolean(uploadedImageFileAngle1 && !integrityResultAngle1?.passed);
+                  const blockSubmitForAngle2 = Boolean(uploadedImageFileAngle2 && !integrityResultAngle2?.passed);
 
-                            {integrityResult.trustScore?.notes && (
-                              <p className="text-xs text-muted-foreground italic">
-                                {integrityResult.trustScore.notes}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        
-                        {/* Differences List */}
-                        {integrityResult.differences && integrityResult.differences.length > 0 && (
-                          <div className="mb-3">
-                            <h6 className="text-sm font-medium mb-2">Detected Differences ({integrityResult.differences.length}):</h6>
-                            <div className="space-y-2 max-h-32 overflow-y-auto">
-                              {integrityResult.differences.map((diff: any, idx: number) => (
-                                <div
-                                  key={idx}
-                                  className={`p-2 rounded text-xs ${
-                                    diff.severity === "high"
-                                      ? "bg-red-100 border-l-2 border-red-500"
-                                      : diff.severity === "medium"
-                                      ? "bg-orange-100 border-l-2 border-orange-500"
-                                      : "bg-yellow-100 border-l-2 border-yellow-500"
-                                  }`}
-                                >
-                                  <div className="font-medium">{diff.location}</div>
-                                  <div className="text-muted-foreground">{diff.description}</div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        
-                        {integrityResult.passed && (
+                  return (
+                    <div className="space-y-6">
+                      <div className="space-y-2">
+                        <Label htmlFor="imageAngle1" className="text-xs text-muted-foreground">Angle 1 Image URL</Label>
+                        <div className="flex gap-2 items-center">
+                          <Input
+                            id="imageAngle1"
+                            placeholder="/demo/image.jpg or IPFS url"
+                            value={imageAngle1}
+                            onChange={(e) => setImageAngle1(e.target.value)}
+                            style={{ flex: 1 }}
+                            disabled={isUploadingImage}
+                          />
                           <Button
-                            onClick={async () => {
-                              if (uploadedImageFile) {
-                                try {
-                                  const url = await handlePinataUpload(uploadedImageFile);
-                                  setImage(url);
-                                  setUploadedImageFile(null);
-                                  setUploadedImagePreview(null);
-                                  setIntegrityResult(null);
-                                  toast({ 
-                                    title: "Upload Success", 
-                                    description: "Image uploaded to IPFS and ready for blockchain." 
-                                  });
-                                } catch {
-                                  toast({ 
-                                    title: "Upload Error", 
-                                    description: "Failed to upload image to Pinata", 
-                                    variant: "destructive" 
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = 'image/*';
+                              input.onchange = async (e) => {
+                                const file = (e.target as HTMLInputElement).files?.[0];
+                                if (file) {
+                                  setUploadedImageFileAngle1(file);
+                                  const reader = new FileReader();
+                                  reader.onload = () => {
+                                    setUploadedImagePreviewAngle1(reader.result as string);
+                                  };
+                                  reader.readAsDataURL(file);
+                                  toast({
+                                    title: "Image Selected",
+                                    description: "Angle 1 selected. Run integrity check before uploading to IPFS.",
                                   });
                                 }
-                              }
+                              };
+                              input.click();
                             }}
-                            size="sm"
+                            disabled={isUploadingImage}
                             className="gap-2"
                           >
-                            <Upload className="h-4 w-4" />
-                            Upload to IPFS
+                            {isUploadingImage ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Uploading...
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="h-4 w-4" />
+                                Choose File
+                              </>
+                            )}
                           </Button>
+                        </div>
+
+                        {uploadedImageFileAngle1 && selectedBatch && (
+                          <div className="mt-4 p-4 border rounded-lg bg-muted/50">
+                            <div className="flex items-center justify-between mb-4">
+                              <div>
+                                <h4 className="font-semibold text-sm">Integrity Check (Angle 1)</h4>
+                                <p className="text-xs text-muted-foreground">
+                                  Compare uploaded image with baseline images from batch: {selectedBatch.id}
+                                </p>
+                              </div>
+                              <Button
+                                onClick={() => {
+                                  if (uploadedImageFileAngle1 && baselineAngle1) {
+                                    checkIntegrityAngle1(baselineAngle1, uploadedImageFileAngle1);
+                                  }
+                                }}
+                                disabled={isCheckingIntegrityAngle1 || !baselineAngle1}
+                                size="sm"
+                                className="gap-2"
+                              >
+                                {isCheckingIntegrityAngle1 ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Checking...
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShieldCheck className="h-4 w-4" />
+                                    Check Integrity
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 mb-4">
+                              <div>
+                                <h5 className="text-sm font-medium mb-2 flex items-center gap-2">
+                                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                  Baseline (Angle 1)
+                                </h5>
+                                <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
+                                  {baselineAngle1 ? (
+                                    <img src={baselineAngle1} alt="Baseline" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="text-center p-4">
+                                      <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                      <p className="text-xs text-muted-foreground">No baseline image</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <h5 className="text-sm font-medium mb-2 flex items-center gap-2">
+                                  <AlertTriangle className="h-4 w-4 text-orange-500" />
+                                  Uploaded (Angle 1)
+                                </h5>
+                                <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
+                                  {uploadedImagePreviewAngle1 ? (
+                                    <img src={uploadedImagePreviewAngle1} alt="Uploaded" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="text-center p-4">
+                                      <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                      <p className="text-xs text-muted-foreground">No image selected</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {integrityResultAngle1?.passed && (
+                              <Button
+                                onClick={async () => {
+                                  if (uploadedImageFileAngle1) {
+                                    try {
+                                      const url = await handlePinataUpload(uploadedImageFileAngle1);
+                                      setImageAngle1(url);
+                                      setUploadedImageFileAngle1(null);
+                                      setUploadedImagePreviewAngle1(null);
+                                      setIntegrityResultAngle1(null);
+                                      toast({
+                                        title: "Upload Success",
+                                        description: "Angle 1 image uploaded to IPFS.",
+                                      });
+                                    } catch {
+                                      toast({
+                                        title: "Upload Error",
+                                        description: "Failed to upload image to Pinata",
+                                        variant: "destructive",
+                                      });
+                                    }
+                                  }
+                                }}
+                                size="sm"
+                                className="gap-2"
+                              >
+                                <Upload className="h-4 w-4" />
+                                Upload Angle 1 to IPFS
+                              </Button>
+                            )}
+                          </div>
+                        )}
+
+                        {imageAngle1 ? (
+                          <div className="rounded-xl border p-2">
+                            <img src={imageAngle1} alt="" className="w-full max-h-64 object-cover rounded-lg" />
+                          </div>
+                        ) : null}
+
+                        {blockSubmitForAngle1 && (
+                          <div className="text-xs text-red-600">
+                            Angle 1 integrity check is required before logging.
+                          </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                )}
-                
+
+                      <div className="space-y-2">
+                        <Label htmlFor="imageAngle2" className="text-xs text-muted-foreground">Angle 2 Image URL</Label>
+                        <div className="flex gap-2 items-center">
+                          <Input
+                            id="imageAngle2"
+                            placeholder="/demo/image.jpg or IPFS url"
+                            value={imageAngle2}
+                            onChange={(e) => setImageAngle2(e.target.value)}
+                            style={{ flex: 1 }}
+                            disabled={isUploadingImage}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = 'image/*';
+                              input.onchange = async (e) => {
+                                const file = (e.target as HTMLInputElement).files?.[0];
+                                if (file) {
+                                  setUploadedImageFileAngle2(file);
+                                  const reader = new FileReader();
+                                  reader.onload = () => {
+                                    setUploadedImagePreviewAngle2(reader.result as string);
+                                  };
+                                  reader.readAsDataURL(file);
+                                  toast({
+                                    title: "Image Selected",
+                                    description: "Angle 2 selected. Run integrity check before uploading to IPFS.",
+                                  });
+                                }
+                              };
+                              input.click();
+                            }}
+                            disabled={isUploadingImage}
+                            className="gap-2"
+                          >
+                            {isUploadingImage ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Uploading...
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="h-4 w-4" />
+                                Choose File
+                              </>
+                            )}
+                          </Button>
+                        </div>
+
+                        {uploadedImageFileAngle2 && selectedBatch && (
+                          <div className="mt-4 p-4 border rounded-lg bg-muted/50">
+                            <div className="flex items-center justify-between mb-4">
+                              <div>
+                                <h4 className="font-semibold text-sm">Integrity Check (Angle 2)</h4>
+                                <p className="text-xs text-muted-foreground">
+                                  Compare uploaded image with baseline images from batch: {selectedBatch.id}
+                                </p>
+                              </div>
+                              <Button
+                                onClick={() => {
+                                  if (uploadedImageFileAngle2 && baselineAngle2) {
+                                    checkIntegrityAngle2(baselineAngle2, uploadedImageFileAngle2);
+                                  }
+                                }}
+                                disabled={isCheckingIntegrityAngle2 || !baselineAngle2}
+                                size="sm"
+                                className="gap-2"
+                              >
+                                {isCheckingIntegrityAngle2 ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Checking...
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShieldCheck className="h-4 w-4" />
+                                    Check Integrity
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 mb-4">
+                              <div>
+                                <h5 className="text-sm font-medium mb-2 flex items-center gap-2">
+                                  <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                  Baseline (Angle 2)
+                                </h5>
+                                <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
+                                  {baselineAngle2 ? (
+                                    <img src={baselineAngle2} alt="Baseline" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="text-center p-4">
+                                      <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                      <p className="text-xs text-muted-foreground">No baseline image</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <h5 className="text-sm font-medium mb-2 flex items-center gap-2">
+                                  <AlertTriangle className="h-4 w-4 text-orange-500" />
+                                  Uploaded (Angle 2)
+                                </h5>
+                                <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
+                                  {uploadedImagePreviewAngle2 ? (
+                                    <img src={uploadedImagePreviewAngle2} alt="Uploaded" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="text-center p-4">
+                                      <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                      <p className="text-xs text-muted-foreground">No image selected</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {integrityResultAngle2?.passed && (
+                              <Button
+                                onClick={async () => {
+                                  if (uploadedImageFileAngle2) {
+                                    try {
+                                      const url = await handlePinataUpload(uploadedImageFileAngle2);
+                                      setImageAngle2(url);
+                                      setUploadedImageFileAngle2(null);
+                                      setUploadedImagePreviewAngle2(null);
+                                      setIntegrityResultAngle2(null);
+                                      toast({
+                                        title: "Upload Success",
+                                        description: "Angle 2 image uploaded to IPFS.",
+                                      });
+                                    } catch {
+                                      toast({
+                                        title: "Upload Error",
+                                        description: "Failed to upload image to Pinata",
+                                        variant: "destructive",
+                                      });
+                                    }
+                                  }
+                                }}
+                                size="sm"
+                                className="gap-2"
+                              >
+                                <Upload className="h-4 w-4" />
+                                Upload Angle 2 to IPFS
+                              </Button>
+                            )}
+                          </div>
+                        )}
+
+                        {imageAngle2 ? (
+                          <div className="rounded-xl border p-2">
+                            <img src={imageAngle2} alt="" className="w-full max-h-64 object-cover rounded-lg" />
+                          </div>
+                        ) : null}
+
+                        {blockSubmitForAngle2 && (
+                          <div className="text-xs text-red-600">
+                            Angle 2 integrity check is required before logging.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {isUploadingImage && <span className="text-xs text-blue-500">Uploading image...</span>}
-                {image ? (
-                  <div className="rounded-xl border p-2">
-                    <img
-                      src={image}
-                      alt=""
-                      className="w-full max-h-64 object-cover rounded-lg"
-                    />
-                  </div>
-                ) : null}
               </div>
 
               <motion.div whileTap={{ scale: 0.98 }}>
@@ -1010,7 +1330,8 @@ export default function LogEvent(): JSX.Element {
                   disabled={
                     isLogging || 
                     (isContractBatch && !connectedAddress) ||
-                    (uploadedImageFile && !integrityResult?.passed)
+                    (uploadedImageFileAngle1 && !integrityResultAngle1?.passed) ||
+                    (uploadedImageFileAngle2 && !integrityResultAngle2?.passed)
                   }
                 >
                   {isLogging ? (
@@ -1018,7 +1339,7 @@ export default function LogEvent(): JSX.Element {
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       {isContractBatch ? 'Logging to Blockchain...' : 'Logging Event...'}
                     </>
-                  ) : uploadedImageFile && !integrityResult?.passed ? (
+                  ) : (uploadedImageFileAngle1 && !integrityResultAngle1?.passed) || (uploadedImageFileAngle2 && !integrityResultAngle2?.passed) ? (
                     <>
                       <ShieldCheck className="mr-2 h-4 w-4" />
                       TIS Score Too Low (Need ≥40%)
@@ -1092,10 +1413,9 @@ export default function LogEvent(): JSX.Element {
               </div>
 
               <div className="p-4 bg-muted rounded-lg space-y-2">
-                <h3 className="font-semibold">Step 4: Optional Image</h3>
+                <h3 className="font-semibold">Step 4: 2 Images (Required)</h3>
                 <p className="text-sm text-muted-foreground">
-                  Add an image URL if you have a receipt/photo. We store the
-                  hash in the ledger.
+                  Add both angle images. We store them in the ledger using the existing event image field.
                 </p>
               </div>
 
@@ -1109,6 +1429,244 @@ export default function LogEvent(): JSX.Element {
           </Card>
         </motion.div>
       </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mt-8"
+      >
+        <Card className="overflow-hidden">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  Pending Batches
+                  <Badge variant="secondary" className="font-mono">
+                    approved=false
+                  </Badge>
+                </CardTitle>
+                <CardDescription>
+                  Live feed from InsForge `batches` table. Click approve to autofill the Batch ID and both images.
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refetchPendingInsforgeBatches()}
+                  disabled={isLoadingPendingInsforgeBatches || isFetchingPendingInsforgeBatches}
+                  className="gap-2"
+                >
+                  {(isLoadingPendingInsforgeBatches || isFetchingPendingInsforgeBatches) ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Refreshing
+                    </>
+                  ) : (
+                    "Refresh"
+                  )}
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {(!INSFORGE_BASE_URL || !INSFORGE_ANON_KEY) && (
+              <div className="rounded-lg border bg-muted/30 p-4 text-sm">
+                <div className="font-medium mb-1">InsForge env not configured</div>
+                <div className="text-muted-foreground">
+                  Add `VITE_INSFORGE_BASE_URL` and `VITE_INSFORGE_ANON_KEY` to your frontend `.env`, then restart Vite.
+                </div>
+              </div>
+            )}
+
+            {pendingInsforgeBatchesError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                {pendingInsforgeBatchesError instanceof Error
+                  ? pendingInsforgeBatchesError.message
+                  : "Failed to load pending batches"}
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Batch ID</TableHead>
+                    <TableHead>Created</TableHead>
+                    <TableHead>First View</TableHead>
+                    <TableHead>Second View</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isLoadingPendingInsforgeBatches ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                        Loading pending batches...
+                      </TableCell>
+                    </TableRow>
+                  ) : pendingInsforgeBatches.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
+                        No pending rows (approved=false)
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    pendingInsforgeBatches.map((row) => {
+                      const firstUrl = ipfsToHttp(row.first_view_ipfs);
+                      const secondUrl = ipfsToHttp(row.second_view_ipfs);
+                      const isApproving = approveInsforgeBatchMutation.isPending && approveInsforgeBatchMutation.variables?.id === row.id;
+                      const isRejecting = rejectInsforgeBatchMutation.isPending && rejectInsforgeBatchMutation.variables?.id === row.id;
+
+                      return (
+                        <TableRow key={row.id} className="hover:bg-muted/30">
+                          <TableCell className="font-mono font-semibold">{row.batch_id}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {row.created_at ? new Date(row.created_at).toLocaleString() : "-"}
+                          </TableCell>
+                          <TableCell>
+                            {firstUrl ? (
+                              <a
+                                href={firstUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-sm underline underline-offset-4"
+                              >
+                                Open
+                              </a>
+                            ) : (
+                              <span className="text-sm text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {secondUrl ? (
+                              <a
+                                href={secondUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-sm underline underline-offset-4"
+                              >
+                                Open
+                              </a>
+                            ) : (
+                              <span className="text-sm text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                className="gap-2"
+                                disabled={isApproving || isRejecting}
+                                onClick={async () => {
+                                  setSelectedInsforgeBatch(row);
+                                  setBatchId(row.batch_id);
+                                  setInsforgeFirstViewUrl(firstUrl);
+                                  setInsforgeSecondViewUrl(secondUrl);
+                                  if (firstUrl) {
+                                    setImageAngle1(firstUrl);
+                                  }
+                                  if (secondUrl) {
+                                    setImageAngle2(secondUrl);
+                                  }
+                                  toast({
+                                    title: "Loaded batch",
+                                    description: `Batch ID and both images filled for ${row.batch_id}`,
+                                  });
+
+                                  try {
+                                    await approveInsforgeBatchMutation.mutateAsync(row);
+                                    toast({
+                                      title: "Approved",
+                                      description: `${row.batch_id} marked approved in InsForge`,
+                                    });
+                                  } catch (e) {
+                                    toast({
+                                      title: "Approve failed",
+                                      description: e instanceof Error ? e.message : "Could not approve",
+                                      variant: "destructive",
+                                    });
+                                  }
+                                }}
+                              >
+                                {isApproving ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Approving
+                                  </>
+                                ) : (
+                                  <>
+                                    <CheckCircle2 className="h-4 w-4" />
+                                    Approve
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-2"
+                                disabled={isApproving || isRejecting}
+                                onClick={async () => {
+                                  const ok = window.confirm(`Reject ${row.batch_id}? This will delete the row from InsForge.`);
+                                  if (!ok) return;
+                                  try {
+                                    await rejectInsforgeBatchMutation.mutateAsync(row);
+                                    toast({
+                                      title: "Rejected",
+                                      description: `${row.batch_id} removed from pending list`,
+                                    });
+                                  } catch (e) {
+                                    toast({
+                                      title: "Reject failed",
+                                      description: e instanceof Error ? e.message : "Could not reject",
+                                      variant: "destructive",
+                                    });
+                                  }
+                                }}
+                              >
+                                {isRejecting ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Rejecting
+                                  </>
+                                ) : (
+                                  <>
+                                    <AlertTriangle className="h-4 w-4" />
+                                    Reject
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            {(insforgeFirstViewUrl || insforgeSecondViewUrl) && (
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border p-4">
+                  <div className="text-sm font-semibold mb-2">First view (angle 1)</div>
+                  <Input value={insforgeFirstViewUrl} readOnly />
+                  {insforgeFirstViewUrl && (
+                    <img src={insforgeFirstViewUrl} alt="" className="mt-3 w-full max-h-56 object-cover rounded-lg border" />
+                  )}
+                </div>
+                <div className="rounded-xl border p-4">
+                  <div className="text-sm font-semibold mb-2">Second view (angle 2)</div>
+                  <Input value={insforgeSecondViewUrl} readOnly />
+                  {insforgeSecondViewUrl && (
+                    <img src={insforgeSecondViewUrl} alt="" className="mt-3 w-full max-h-56 object-cover rounded-lg border" />
+                  )}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </motion.div>
 
       {/* Scanner Dialog — centered, clean, animated */}
       <Dialog open={scanOpen} onOpenChange={setScanOpen}>

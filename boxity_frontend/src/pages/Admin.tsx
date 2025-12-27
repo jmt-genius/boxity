@@ -47,7 +47,8 @@ const Admin = () => {
   const [productName, setProductName] = useState("");
   const [sku, setSku] = useState("");
   const [batchId, setBatchId] = useState("");
-  const [baselineImage, setBaselineImage] = useState("");
+  const [baselineImage1, setBaselineImage1] = useState("");
+  const [baselineImage2, setBaselineImage2] = useState("");
   const [qrDialogOpen, setQrDialogOpen] = useState(false);
   const [currentQR, setCurrentQR] = useState({ id: "", dataUrl: "" });
   const [isCreating, setIsCreating] = useState(false);
@@ -55,6 +56,13 @@ const Admin = () => {
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
   const JWT = import.meta.env.VITE_PINATA_JWT as string;
+
+  const IMAGE_PACK_DELIMITER = "||";
+
+  const packImages = (a: string, b: string): string => {
+    const out = [String(a || "").trim(), String(b || "").trim()].filter(Boolean);
+    return out.join(IMAGE_PACK_DELIMITER);
+  };
 
   const handlePinataUpload = async (file: File): Promise<string> => {
     setIsUploadingImage(true);
@@ -148,13 +156,14 @@ const Admin = () => {
     const finalBatchId = batchId || generateBatchId();
 
     try {
-      // Create batch on blockchain
+      // Create batch on blockchain with separate baseline images
       const tx = await web3Service.createBatch(
         finalBatchId,
         productName,
         sku || "",
-        "Your Company",
-        baselineImage || "/demo/placeholder.jpg"
+        connectedAddress, // <-- Use the actual wallet address
+        baselineImage1 || "/demo/placeholder.jpg",
+        baselineImage2 || "/demo/placeholder.jpg"
       );
 
       toast({
@@ -186,7 +195,8 @@ const Admin = () => {
         setProductName("");
         setSku("");
         setBatchId("");
-        setBaselineImage("");
+        setBaselineImage1("");
+        setBaselineImage2("");
 
         toast({
           title: "Success",
@@ -293,76 +303,143 @@ const Admin = () => {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="baselineImage">
-                  Baseline Image URL (or upload)
-                </Label>
-                <div className="flex gap-2 items-center">
-                  <Input
-                    id="baselineImage"
-                    placeholder="/demo/product.jpg or IPFS url"
-                    value={baselineImage}
-                    onChange={(e) => setBaselineImage(e.target.value)}
-                    style={{ flex: 1 }}
-                    disabled={isUploadingImage}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const input = document.createElement("input");
-                      input.type = "file";
-                      input.accept = "image/*";
-                      input.onchange = async (e) => {
-                        const file = (e.target as HTMLInputElement).files?.[0];
-                        if (file) {
-                          try {
-                            const url = await handlePinataUpload(file);
-                            setBaselineImage(url);
-                            toast({
-                              title: "Upload Success",
-                              description: "Image uploaded to IPFS.",
-                            });
-                          } catch {
-                            toast({
-                              title: "Upload Error",
-                              description: "Failed to upload image to Pinata",
-                              variant: "destructive",
-                            });
-                          }
-                        }
-                      };
-                      input.click();
-                    }}
-                    disabled={isUploadingImage}
-                    className="gap-2"
-                  >
-                    {isUploadingImage ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Uploading...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-4 w-4" />
-                        Choose File
-                      </>
+                <Label>Baseline Images (2 angles)</Label>
+
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="baselineImage1" className="text-xs text-muted-foreground">Baseline Image 1</Label>
+                    <div className="flex gap-2 items-center">
+                      <Input
+                        id="baselineImage1"
+                        placeholder="/demo/product.jpg or IPFS url"
+                        value={baselineImage1}
+                        onChange={(e) => setBaselineImage1(e.target.value)}
+                        style={{ flex: 1 }}
+                        disabled={isUploadingImage}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/*";
+                          input.onchange = async (e) => {
+                            const file = (e.target as HTMLInputElement).files?.[0];
+                            if (file) {
+                              try {
+                                const url = await handlePinataUpload(file);
+                                setBaselineImage1(url);
+                                toast({
+                                  title: "Upload Success",
+                                  description: "Image 1 uploaded to IPFS.",
+                                });
+                              } catch {
+                                toast({
+                                  title: "Upload Error",
+                                  description: "Failed to upload image to Pinata",
+                                  variant: "destructive",
+                                });
+                              }
+                            }
+                          };
+                          input.click();
+                        }}
+                        disabled={isUploadingImage}
+                        className="gap-2"
+                      >
+                        {isUploadingImage ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Uploading...
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="h-4 w-4" />
+                            Choose File
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    {baselineImage1 && (
+                      <img
+                        src={baselineImage1}
+                        alt="baseline 1 preview"
+                        className="w-28 h-28 rounded border mt-2 object-cover"
+                        onError={(e) => (e.currentTarget.style.display = "none")}
+                      />
                     )}
-                  </Button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="baselineImage2" className="text-xs text-muted-foreground">Baseline Image 2</Label>
+                    <div className="flex gap-2 items-center">
+                      <Input
+                        id="baselineImage2"
+                        placeholder="/demo/product.jpg or IPFS url"
+                        value={baselineImage2}
+                        onChange={(e) => setBaselineImage2(e.target.value)}
+                        style={{ flex: 1 }}
+                        disabled={isUploadingImage}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/*";
+                          input.onchange = async (e) => {
+                            const file = (e.target as HTMLInputElement).files?.[0];
+                            if (file) {
+                              try {
+                                const url = await handlePinataUpload(file);
+                                setBaselineImage2(url);
+                                toast({
+                                  title: "Upload Success",
+                                  description: "Image 2 uploaded to IPFS.",
+                                });
+                              } catch {
+                                toast({
+                                  title: "Upload Error",
+                                  description: "Failed to upload image to Pinata",
+                                  variant: "destructive",
+                                });
+                              }
+                            }
+                          };
+                          input.click();
+                        }}
+                        disabled={isUploadingImage}
+                        className="gap-2"
+                      >
+                        {isUploadingImage ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Uploading...
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="h-4 w-4" />
+                            Choose File
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    {baselineImage2 && (
+                      <img
+                        src={baselineImage2}
+                        alt="baseline 2 preview"
+                        className="w-28 h-28 rounded border mt-2 object-cover"
+                        onError={(e) => (e.currentTarget.style.display = "none")}
+                      />
+                    )}
+                  </div>
                 </div>
-                {isUploadingImage && (
-                  <span className="text-xs text-blue-500">
-                    Uploading image...
-                  </span>
-                )}
-                {baselineImage && (
-                  <img
-                    src={baselineImage}
-                    alt="baseline preview"
-                    className="w-28 h-28 rounded border mt-2 object-cover"
-                    onError={(e) => (e.currentTarget.style.display = "none")}
-                  />
-                )}
+
+                {isUploadingImage && <span className="text-xs text-blue-500">Uploading image...</span>}
               </div>
 
               <Button

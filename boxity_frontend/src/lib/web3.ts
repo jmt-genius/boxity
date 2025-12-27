@@ -8,7 +8,8 @@ export interface Batch {
   sku: string;
   origin: string;
   createdAt: string; // ISO string
-  baselineImage: string;
+  firstViewBaseline: string;
+  secondViewBaseline: string;
   creator: string;
   exists: boolean;
 }
@@ -19,7 +20,8 @@ export interface BatchEvent {
   role: string;
   timestamp: number;
   note: string;
-  image: string;
+  firstViewImage: string;
+  secondViewImage: string;
   eventHash: string;
   loggedBy: string;
 }
@@ -127,7 +129,8 @@ export class Web3Service {
     productName: string,
     sku: string,
     origin: string,
-    baselineImage: string
+    firstViewBaseline: string,
+    secondViewBaseline: string
   ): Promise<ethers.ContractTransactionResponse> {
     if (!this.contract) throw new Error('Contract not initialized');
     
@@ -136,7 +139,8 @@ export class Web3Service {
       productName,
       sku,
       origin,
-      baselineImage
+      firstViewBaseline,
+      secondViewBaseline
     );
   }
 
@@ -151,7 +155,8 @@ export class Web3Service {
       sku: batch.sku,
       origin: batch.origin,
       createdAt: new Date(Number(batch.createdAt) * 1000).toISOString(),
-      baselineImage: batch.baselineImage,
+      firstViewBaseline: batch.firstViewBaseline,
+      secondViewBaseline: batch.secondViewBaseline,
       creator: batch.creator,
       exists: batch.exists
     };
@@ -173,7 +178,8 @@ export class Web3Service {
       role: event.role,
       timestamp: Number(event.timestamp),
       note: event.note,
-      image: event.image,
+      firstViewImage: event.firstViewImage,
+      secondViewImage: event.secondViewImage,
       eventHash: event.eventHash,
       loggedBy: event.loggedBy
     }));
@@ -198,7 +204,8 @@ export class Web3Service {
     actor: string,
     role: string,
     note: string,
-    image: string,
+    firstViewImage: string,
+    secondViewImage: string,
     eventHash: string
   ): Promise<ethers.ContractTransactionResponse> {
     if (!this.contract) throw new Error('Contract not initialized');
@@ -208,7 +215,8 @@ export class Web3Service {
       actor,
       role,
       note,
-      image,
+      firstViewImage,
+      secondViewImage,
       eventHash
     );
   }

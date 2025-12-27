@@ -8,6 +8,16 @@ interface AnimatedTimelineProps {
 }
 
 export const AnimatedTimeline = ({ events }: AnimatedTimelineProps) => {
+  const IMAGE_PACK_DELIMITER = "||";
+  const unpackImages = (packed: string): string[] => {
+    const raw = String(packed || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(IMAGE_PACK_DELIMITER)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
   const getIntegrityColor = (note: string) => {
     if (note.toLowerCase().includes('dent') || note.toLowerCase().includes('damage')) {
       return 'bg-yellow-500';
@@ -55,17 +65,29 @@ export const AnimatedTimeline = ({ events }: AnimatedTimelineProps) => {
             <p className="text-muted-foreground">{event.note}</p>
 
             {event.image && (
-              <motion.img
-                src={event.image}
-                alt="Event documentation"
-                className="w-48 h-48 object-cover rounded-lg border border-border"
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: index * 0.15 + 0.3 }}
-                onError={(e) => {
-                  e.currentTarget.src = '/placeholder.svg';
-                }}
-              />
+              <div className="grid grid-cols-2 gap-3">
+                {(() => {
+                  const urls = unpackImages(event.image);
+                  const a = urls[0] || event.image;
+                  const b = urls[1] || "";
+                  const list = [a, b].filter(Boolean);
+
+                  return list.map((src, idx) => (
+                    <motion.img
+                      key={`${src}-${idx}`}
+                      src={src}
+                      alt={`Event documentation ${idx + 1}`}
+                      className="w-48 h-48 object-cover rounded-lg border border-border"
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: index * 0.15 + 0.3 }}
+                      onError={(e) => {
+                        e.currentTarget.src = '/placeholder.svg';
+                      }}
+                    />
+                  ));
+                })()}
+              </div>
             )}
 
             <div className="space-y-2 p-3 bg-muted/50 rounded-lg text-sm font-mono">
