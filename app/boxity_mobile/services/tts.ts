@@ -11,12 +11,57 @@ const FEEDBACK_MESSAGES: Record<VoiceFeedback, string> = {
   ready: 'Ready to capture',
 };
 
+// React Native compatible ElevenLabs client
+class ElevenLabsClient {
+  private apiKey: string;
+  private environment: string;
+
+  constructor(config: { apiKey: string; environment?: string }) {
+    this.apiKey = config.apiKey;
+    this.environment = config.environment || 'https://api.elevenlabs.io/';
+  }
+
+  textToSpeech = {
+    convert: async (
+      voiceId: string,
+      options: {
+        text: string;
+        modelId: string;
+        outputFormat?: string;
+      }
+    ) => {
+      const response = await fetch(`${this.environment}v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': this.apiKey,
+        },
+        body: JSON.stringify({
+          text: options.text,
+          model_id: options.modelId,
+          output_format: options.outputFormat || 'mp3_44100_128',
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`ElevenLabs API error: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+
+      return response;
+    },
+  };
+}
+
 class TTSService {
   private sound: Audio.Sound | null = null;
   private lastFeedbackTime = 0;
   private readonly COOLDOWN_MS = 2500;
   private audioCache: Map<VoiceFeedback, string> = new Map();
   private isEnabled = true;
+  private client: ElevenLabsClient | null = null;
+  private readonly VOICE_ID = 'PIGsltMj3gFMR34aFDI3';
 
   async initialize() {
     try {
@@ -24,6 +69,19 @@ class TTSService {
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
       });
+
+      // Initialize ElevenLabs client
+      const apiKey = process.env.EXPO_PUBLIC_ELEVENLABS_API_KEY;
+      if (apiKey) {
+        this.client = new ElevenLabsClient({
+          apiKey,
+          environment: 'https://api.elevenlabs.io/',
+        });
+        console.log('TTS: ElevenLabs client initialized');
+      } else {
+        console.warn('TTS: ElevenLabs API key not found');
+      }
+
       console.log('TTS: Audio mode configured');
     } catch (error) {
       console.error('TTS: Failed to configure audio mode:', error);
@@ -50,13 +108,45 @@ class TTSService {
       const message = FEEDBACK_MESSAGES[feedback];
       console.log('TTS: Playing feedback:', message);
 
-      const audioUri = await this.getOrGenerateAudio(feedback, message);
+      // Check if audio is already cached
+      let audioUri = this.audioCache.get(feedback);
       
+      if (audioUri) {
+        console.log('TTS: Using cached audio');
+      } else {
+        // Generate audio only when needed
+        console.log('TTS: Generating audio with ElevenLabs...');
+        
+        if (!this.client) {
+          throw new Error('TTS: ElevenLabs client not initialized. Please check your API key.');
+        }
+
+        // Use client.textToSpeech.convert to generate audio
+        const response = await this.client.textToSpeech.convert(this.VOICE_ID, {
+          outputFormat: 'mp3_44100_128',
+          text: message,
+          modelId: 'eleven_multilingual_v2',
+        });
+
+        const charCost = response.headers.get('x-character-count');
+        const requestId = response.headers.get('request-id');
+        console.log('TTS: Character cost:', charCost, 'Request ID:', requestId);
+
+        const audioBuffer = await response.arrayBuffer();
+        const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioBuffer)));
+        audioUri = `data:audio/mpeg;base64,${base64Audio}`;
+
+        // Cache the generated audio for future use
+        this.audioCache.set(feedback, audioUri);
+        console.log('TTS: Audio cached for future use');
+      }
+
+      // Play the audio
       const { sound } = await Audio.Sound.createAsync(
         { uri: audioUri },
         { shouldPlay: true }
       );
-      
+
       this.sound = sound;
 
       sound.setOnPlaybackStatusUpdate((status: any) => {
@@ -67,19 +157,6 @@ class TTSService {
     } catch (error) {
       console.error('TTS: Playback failed:', error);
     }
-  }
-
-  private async getOrGenerateAudio(feedback: VoiceFeedback, message: string): Promise<string> {
-    if (this.audioCache.has(feedback)) {
-      console.log('TTS: Using cached audio');
-      return this.audioCache.get(feedback)!;
-    }
-
-    const mockAudioUri = `data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAADhAC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7v////////////////////////////////////////////////////////////AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAA4Rjp8XIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//sQZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/+xBkGQ/wAABpAAAACAAADSAAAAEAAAGkAAAAIAAANIAAAARVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU=`;
-    
-    this.audioCache.set(feedback, mockAudioUri);
-    
-    return mockAudioUri;
   }
 
   setEnabled(enabled: boolean) {

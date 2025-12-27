@@ -40,24 +40,9 @@ class IpfsService {
       } as any;
 
       formData.append('file', file);
+      formData.append('network', 'public');
 
-      const metadata = JSON.stringify({
-        name: filename,
-        keyvalues: {
-          app: 'boxity-scanner',
-          timestamp: new Date().toISOString(),
-        },
-      });
-      formData.append('pinataMetadata', metadata);
-
-      const options = JSON.stringify({
-        cidVersion: 1,
-      });
-      formData.append('pinataOptions', options);
-
-      const headers: any = {
-        'Content-Type': 'multipart/form-data',
-      };
+      const headers: any = {};
 
       if (PINATA_JWT) {
         headers['Authorization'] = `Bearer ${PINATA_JWT}`;
@@ -66,20 +51,27 @@ class IpfsService {
         headers['pinata_secret_api_key'] = PINATA_SECRET_KEY;
       }
 
-      console.log('IPFS: Uploading to Pinata...');
+      console.log('IPFS: Uploading to Pinata v3 API...');
       
-      const response = await axios.post(
-        'https://api.pinata.cloud/pinning/pinFileToIPFS',
-        formData,
-        { headers }
-      );
+      const response = await fetch('https://uploads.pinata.cloud/v3/files', {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
 
-      const ipfsHash = response.data.IpfsHash;
-      const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${ipfsHash}`;
+      if (!response.ok) {
+        throw new Error(`Pinata upload failed: ${response.status} ${response.statusText}`);
+      }
 
-      console.log('IPFS: Upload complete:', ipfsUrl);
-
-      return ipfsUrl;
+      const result = await response.json();
+      
+      if (result.data?.cid) {
+        const ipfsUrl = `https://ipfs.io/ipfs/${result.data.cid}`;
+        console.log('IPFS: Upload complete:', ipfsUrl);
+        return ipfsUrl;
+      } else {
+        throw new Error('No CID returned from Pinata');
+      }
     } catch (error) {
       console.error('IPFS: Pinata upload failed:', error);
       console.warn('IPFS: Falling back to mock mode');
@@ -92,7 +84,7 @@ class IpfsService {
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     const mockCid = `Qm${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`;
-    const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${mockCid}`;
+    const ipfsUrl = `https://ipfs.io/ipfs/${mockCid}`;
 
     console.log('IPFS: Mock upload complete:', ipfsUrl);
 
