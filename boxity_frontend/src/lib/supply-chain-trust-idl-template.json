@@ -1,0 +1,438 @@
+{
+  "version": "0.1.0",
+  "name": "supply_chain_trust",
+  "instructions": [
+    {
+      "name": "initialize",
+      "accounts": [
+        {
+          "name": "programState",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "owner",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "createBatch",
+      "accounts": [
+        {
+          "name": "batch",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "programState",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "creator",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "batchId",
+          "type": "string"
+        },
+        {
+          "name": "productName",
+          "type": "string"
+        },
+        {
+          "name": "sku",
+          "type": "string"
+        },
+        {
+          "name": "origin",
+          "type": "string"
+        },
+        {
+          "name": "firstViewBaseline",
+          "type": "string"
+        },
+        {
+          "name": "secondViewBaseline",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "logEvent",
+      "accounts": [
+        {
+          "name": "batch",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "event",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "programState",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "logger",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "actor",
+          "type": "string"
+        },
+        {
+          "name": "role",
+          "type": "string"
+        },
+        {
+          "name": "note",
+          "type": "string"
+        },
+        {
+          "name": "firstViewImage",
+          "type": "string"
+        },
+        {
+          "name": "secondViewImage",
+          "type": "string"
+        },
+        {
+          "name": "eventHash",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "setUserAuthorization",
+      "accounts": [
+        {
+          "name": "programState",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "userAuthorization",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "owner",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "user",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "user",
+          "type": "publicKey"
+        },
+        {
+          "name": "authorized",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ProgramState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "publicKey"
+          },
+          {
+            "name": "totalBatches",
+            "type": "u64"
+          },
+          {
+            "name": "nextEventId",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Batch",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "batchId",
+            "type": "string"
+          },
+          {
+            "name": "productName",
+            "type": "string"
+          },
+          {
+            "name": "sku",
+            "type": "string"
+          },
+          {
+            "name": "origin",
+            "type": "string"
+          },
+          {
+            "name": "firstViewBaseline",
+            "type": "string"
+          },
+          {
+            "name": "secondViewBaseline",
+            "type": "string"
+          },
+          {
+            "name": "creator",
+            "type": "publicKey"
+          },
+          {
+            "name": "createdAt",
+            "type": "i64"
+          },
+          {
+            "name": "exists",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BatchEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": "u64"
+          },
+          {
+            "name": "actor",
+            "type": "string"
+          },
+          {
+            "name": "role",
+            "type": "string"
+          },
+          {
+            "name": "note",
+            "type": "string"
+          },
+          {
+            "name": "firstViewImage",
+            "type": "string"
+          },
+          {
+            "name": "secondViewImage",
+            "type": "string"
+          },
+          {
+            "name": "eventHash",
+            "type": "string"
+          },
+          {
+            "name": "loggedBy",
+            "type": "publicKey"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "batch",
+            "type": "publicKey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UserAuthorization",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "publicKey"
+          },
+          {
+            "name": "authorized",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "BatchCreated",
+      "fields": [
+        {
+          "name": "batchId",
+          "type": "string",
+          "index": false
+        },
+        {
+          "name": "creator",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "timestamp",
+          "type": "i64",
+          "index": false
+        }
+      ]
+    },
+    {
+      "name": "EventLogged",
+      "fields": [
+        {
+          "name": "batchId",
+          "type": "string",
+          "index": false
+        },
+        {
+          "name": "eventId",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "actor",
+          "type": "string",
+          "index": false
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "index": false
+        },
+        {
+          "name": "loggedBy",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "timestamp",
+          "type": "i64",
+          "index": false
+        }
+      ]
+    },
+    {
+      "name": "UserAuthorized",
+      "fields": [
+        {
+          "name": "user",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "authorized",
+          "type": "bool",
+          "index": false
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "EmptyProductName",
+      "msg": "Product name cannot be empty"
+    },
+    {
+      "code": 6001,
+      "name": "EmptyOrigin",
+      "msg": "Origin cannot be empty"
+    },
+    {
+      "code": 6002,
+      "name": "EmptyActor",
+      "msg": "Actor cannot be empty"
+    },
+    {
+      "code": 6003,
+      "name": "EmptyRole",
+      "msg": "Role cannot be empty"
+    },
+    {
+      "code": 6004,
+      "name": "EmptyNote",
+      "msg": "Note cannot be empty"
+    },
+    {
+      "code": 6005,
+      "name": "EmptyEventHash",
+      "msg": "Event hash cannot be empty"
+    },
+    {
+      "code": 6006,
+      "name": "BatchNotFound",
+      "msg": "Batch does not exist"
+    },
+    {
+      "code": 6007,
+      "name": "Unauthorized",
+      "msg": "Unauthorized"
+    }
+  ],
+  "metadata": {
+    "address": "YourProgramIdHere"
+  }
+}
+

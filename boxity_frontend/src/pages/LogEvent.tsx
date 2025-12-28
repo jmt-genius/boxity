@@ -122,6 +122,20 @@ export default function LogEvent(): JSX.Element {
   const [selectedInsforgeBatch, setSelectedInsforgeBatch] = useState<InsforgeBatchRow | null>(null);
   const [insforgeFirstViewUrl, setInsforgeFirstViewUrl] = useState<string>("");
   const [insforgeSecondViewUrl, setInsforgeSecondViewUrl] = useState<string>("");
+  
+  // Smart contract baseline images
+  const [contractBaselineAngle1, setContractBaselineAngle1] = useState<string>("");
+  const [contractBaselineAngle2, setContractBaselineAngle2] = useState<string>("");
+  const [isLoadingContractBaseline, setIsLoadingContractBaseline] = useState(false);
+  
+  // Integrity analysis state
+  const [showIntegrityAnalysis, setShowIntegrityAnalysis] = useState(false);
+  const [integrityAnalysisResult, setIntegrityAnalysisResult] = useState<{
+    differences: Array<{location: string, severity: "low" | "medium" | "high", description: string}>;
+    trustScore: {aggregate_tis: number, overall_assessment: string, confidence_overall: number, notes: string};
+    passed: boolean;
+  } | null>(null);
+  const [isAnalyzingIntegrity, setIsAnalyzingIntegrity] = useState(false);
 
   const INSFORGE_BASE_URL = import.meta.env.VITE_INSFORGE_BASE_URL as string | undefined;
   const INSFORGE_ANON_KEY = import.meta.env.VITE_INSFORGE_ANON_KEY as string | undefined;
@@ -330,6 +344,131 @@ export default function LogEvent(): JSX.Element {
       setIntegrityResultAngle1({ passed: false, tisScore: 0, differences: [], trustScore: null });
     } finally {
       setIsCheckingIntegrityAngle1(false);
+    }
+  };
+
+  // Unified analyze function (same mechanism as IntegrityCheck.tsx)
+  const analyzeIntegrity = async () => {
+    if (!contractBaselineAngle1 || !contractBaselineAngle2) {
+      toast({
+        title: "Missing baseline images",
+        description: "Baseline images from smart contract are required. Please approve a batch first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!imageAngle1 || !imageAngle2) {
+      toast({
+        title: "Missing current images",
+        description: "Please upload both angle 1 and angle 2 images first",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsAnalyzingIntegrity(true);
+    setIntegrityAnalysisResult(null);
+
+    try {
+      // Fetch images and convert to base64
+      const fetchImageAsBase64 = async (url: string): Promise<string> => {
+        const response = await fetch(url);
+        const blob = await response.blob();
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      };
+
+      const [baselineAngle1Base64, baselineAngle2Base64, currentAngle1Base64, currentAngle2Base64] = await Promise.all([
+        fetchImageAsBase64(contractBaselineAngle1),
+        fetchImageAsBase64(contractBaselineAngle2),
+        fetchImageAsBase64(imageAngle1),
+        fetchImageAsBase64(imageAngle2),
+      ]);
+
+      // Call analyze API (same format as IntegrityCheck.tsx)
+      const API_BASE = (import.meta.env.VITE_BACKEND_URL as string) || "/api";
+      const response = await fetch(`${API_BASE}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseline_angle1: baselineAngle1Base64,
+          baseline_angle2: baselineAngle2Base64,
+          current_angle1: currentAngle1Base64,
+          current_angle2: currentAngle2Base64,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Analyzer returned ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      // Map backend schema to UI format (same as IntegrityCheck.tsx)
+      const mapped = Array.isArray(data?.differences)
+        ? data.differences.map((d: any) => ({
+            location: `${d?.view ? `${d.view.replace("_", " ")} - ` : ""}${d?.region || "Unknown region"}`,
+            severity: (String(d?.severity || "LOW").toLowerCase() === "critical"
+              ? "high"
+              : String(d?.severity || "LOW").toLowerCase() === "high"
+              ? "high"
+              : String(d?.severity || "LOW").toLowerCase() === "medium"
+              ? "medium"
+              : "low") as "low" | "medium" | "high",
+            description: d?.description || "",
+          }))
+        : [];
+
+      // Extract trust score data
+      const parsedAggregateTis = typeof data?.aggregate_tis === "number" ? data.aggregate_tis : Number(data?.aggregate_tis);
+      const parsedConfidence = typeof data?.confidence_overall === "number" ? data.confidence_overall : Number(data?.confidence_overall);
+
+      const trustScoreData = {
+        aggregate_tis: Number.isFinite(parsedAggregateTis) ? parsedAggregateTis : 100,
+        overall_assessment: data?.overall_assessment ?? "SAFE",
+        confidence_overall: Number.isFinite(parsedConfidence) ? parsedConfidence : 0.8,
+        notes: data?.notes ?? "Analysis completed",
+      };
+
+      // Allow approval if TIS score is 40 or above
+      const passed = trustScoreData.aggregate_tis >= 40;
+
+      setIntegrityAnalysisResult({
+        differences: mapped,
+        trustScore: trustScoreData,
+        passed,
+      });
+
+      const riskLevel = String(trustScoreData.overall_assessment || "").toUpperCase().includes("SAFE")
+        ? "SAFE"
+        : String(trustScoreData.overall_assessment || "").toUpperCase().includes("MODERATE")
+        ? "MODERATE RISK"
+        : "HIGH RISK";
+
+      toast({
+        title: passed ? "Analysis Passed" : "Analysis Failed",
+        description: `Found ${mapped.length} differences. Trust Score: ${trustScoreData.aggregate_tis}% (${riskLevel})${passed ? "" : " - Approval blocked"}`,
+        variant: passed ? "default" : "destructive",
+      });
+    } catch (error) {
+      console.error("Analysis error:", error);
+      toast({
+        title: "Analysis failed",
+        description: "Could not analyze images. Check backend URL/API.",
+        variant: "destructive",
+      });
+      setIntegrityAnalysisResult({
+        differences: [],
+        trustScore: { aggregate_tis: 0, overall_assessment: "ERROR", confidence_overall: 0, notes: "Analysis failed" },
+        passed: false,
+      });
+    } finally {
+      setIsAnalyzingIntegrity(false);
     }
   };
 
@@ -551,11 +690,6 @@ export default function LogEvent(): JSX.Element {
         }
       } catch (error: any) {
         console.error('Event logging error:', error);
-        toast({
-          title: 'Error',
-          description: error.message || 'Failed to log event on blockchain',
-          variant: 'destructive',
-        });
       } finally {
         setIsLogging(false);
       }
@@ -1331,13 +1465,19 @@ export default function LogEvent(): JSX.Element {
                     isLogging || 
                     (isContractBatch && !connectedAddress) ||
                     (uploadedImageFileAngle1 && !integrityResultAngle1?.passed) ||
-                    (uploadedImageFileAngle2 && !integrityResultAngle2?.passed)
+                    (uploadedImageFileAngle2 && !integrityResultAngle2?.passed) ||
+                    (showIntegrityAnalysis && (!integrityAnalysisResult || !integrityAnalysisResult.passed))
                   }
                 >
                   {isLogging ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       {isContractBatch ? 'Logging to Blockchain...' : 'Logging Event...'}
+                    </>
+                  ) : (showIntegrityAnalysis && (!integrityAnalysisResult || !integrityAnalysisResult.passed)) ? (
+                    <>
+                      <ShieldCheck className="mr-2 h-4 w-4" />
+                      Integrity Check Required (TIS ≥40%)
                     </>
                   ) : (uploadedImageFileAngle1 && !integrityResultAngle1?.passed) || (uploadedImageFileAngle2 && !integrityResultAngle2?.passed) ? (
                     <>
@@ -1446,7 +1586,7 @@ export default function LogEvent(): JSX.Element {
                   </Badge>
                 </CardTitle>
                 <CardDescription>
-                  Live feed from InsForge `batches` table. Click approve to autofill the Batch ID and both images.
+                  Live feed from InsForge `batches` table. Click approve to load batch and fetch baseline images from smart contract for integrity analysis.
                 </CardDescription>
               </div>
               <div className="flex items-center gap-2">
@@ -1556,6 +1696,7 @@ export default function LogEvent(): JSX.Element {
                             <div className="inline-flex items-center gap-2">
                               <Button
                                 size="sm"
+                                variant="outline"
                                 className="gap-2"
                                 disabled={isApproving || isRejecting}
                                 onClick={async () => {
@@ -1569,38 +1710,80 @@ export default function LogEvent(): JSX.Element {
                                   if (secondUrl) {
                                     setImageAngle2(secondUrl);
                                   }
-                                  toast({
-                                    title: "Loaded batch",
-                                    description: `Batch ID and both images filled for ${row.batch_id}`,
-                                  });
 
+                                  // Fetch baseline images from smart contract
+                                  setIsLoadingContractBaseline(true);
+                                  setIntegrityAnalysisResult(null); // Reset previous analysis
                                   try {
-                                    await approveInsforgeBatchMutation.mutateAsync(row);
+                                    const contractBatch = await web3Service.getBatch(row.batch_id);
+                                    if (contractBatch && contractBatch.firstViewBaseline && contractBatch.secondViewBaseline) {
+                                      setContractBaselineAngle1(contractBatch.firstViewBaseline);
+                                      setContractBaselineAngle2(contractBatch.secondViewBaseline);
+                                      setShowIntegrityAnalysis(true);
+                                      toast({
+                                        title: "Baseline images loaded",
+                                        description: `Fetched baseline images from smart contract for ${row.batch_id}. Click "Analyze" to proceed.`,
+                                      });
+                                    } else {
+                                      toast({
+                                        title: "No baseline images",
+                                        description: `No baseline images found in smart contract for ${row.batch_id}`,
+                                        variant: "destructive",
+                                      });
+                                    }
+                                  } catch (error) {
+                                    console.error("Failed to fetch baseline from contract:", error);
                                     toast({
-                                      title: "Approved",
-                                      description: `${row.batch_id} marked approved in InsForge`,
-                                    });
-                                  } catch (e) {
-                                    toast({
-                                      title: "Approve failed",
-                                      description: e instanceof Error ? e.message : "Could not approve",
+                                      title: "Failed to fetch baseline",
+                                      description: "Could not fetch baseline images from smart contract. Analysis may not work.",
                                       variant: "destructive",
                                     });
+                                  } finally {
+                                    setIsLoadingContractBaseline(false);
                                   }
+
+                                  toast({
+                                    title: "Loaded batch",
+                                    description: `Batch ID and both images filled for ${row.batch_id}. Please analyze before approving.`,
+                                  });
                                 }}
                               >
-                                {isApproving ? (
-                                  <>
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    Approving
-                                  </>
-                                ) : (
-                                  <>
-                                    <CheckCircle2 className="h-4 w-4" />
-                                    Approve
-                                  </>
-                                )}
+                                Load & Analyze
                               </Button>
+                              {selectedInsforgeBatch?.id === row.id && integrityAnalysisResult?.passed && (
+                                <Button
+                                  size="sm"
+                                  className="gap-2"
+                                  disabled={isApproving || isRejecting}
+                                  onClick={async () => {
+                                    try {
+                                      await approveInsforgeBatchMutation.mutateAsync(row);
+                                      toast({
+                                        title: "Approved",
+                                        description: `${row.batch_id} marked approved in InsForge after successful integrity check`,
+                                      });
+                                    } catch (e) {
+                                      toast({
+                                        title: "Approve failed",
+                                        description: e instanceof Error ? e.message : "Could not approve",
+                                        variant: "destructive",
+                                      });
+                                    }
+                                  }}
+                                >
+                                  {isApproving ? (
+                                    <>
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Approving
+                                    </>
+                                  ) : (
+                                    <>
+                                      <CheckCircle2 className="h-4 w-4" />
+                                      Approve in Database
+                                    </>
+                                  )}
+                                </Button>
+                              )}
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1646,7 +1829,254 @@ export default function LogEvent(): JSX.Element {
               </Table>
             </div>
 
-            {(insforgeFirstViewUrl || insforgeSecondViewUrl) && (
+            {/* Baseline Images Comparison Section */}
+            {showIntegrityAnalysis && (contractBaselineAngle1 || contractBaselineAngle2 || insforgeFirstViewUrl || insforgeSecondViewUrl) && (
+              <div className="mt-6 space-y-6">
+                <div className="border rounded-lg p-4 bg-muted/50">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold flex items-center gap-2">
+                      <ShieldCheck className="h-5 w-5" />
+                      Integrity Analysis
+                    </h3>
+                    <Button
+                      onClick={analyzeIntegrity}
+                      disabled={isAnalyzingIntegrity || !contractBaselineAngle1 || !contractBaselineAngle2 || !imageAngle1 || !imageAngle2}
+                      className="gap-2"
+                    >
+                      {isAnalyzingIntegrity ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Analyzing...
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="h-4 w-4" />
+                          Analyze
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {/* Side-by-side comparison */}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {/* Angle 1 Comparison */}
+                    <div className="space-y-3">
+                      <h4 className="text-sm font-semibold">Angle 1 Comparison</h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                            <CheckCircle2 className="h-3 w-3 text-green-500" />
+                            Baseline (Smart Contract)
+                          </p>
+                          <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
+                            {isLoadingContractBaseline ? (
+                              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                            ) : contractBaselineAngle1 ? (
+                              <img src={contractBaselineAngle1} alt="Baseline Angle 1" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="text-center p-4">
+                                <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                <p className="text-xs text-muted-foreground">No baseline</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3 text-orange-500" />
+                            Current (IPFS Upload)
+                          </p>
+                          <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
+                            {insforgeFirstViewUrl ? (
+                              <img src={insforgeFirstViewUrl} alt="Current Angle 1" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="text-center p-4">
+                                <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                <p className="text-xs text-muted-foreground">No image</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Angle 2 Comparison */}
+                    <div className="space-y-3">
+                      <h4 className="text-sm font-semibold">Angle 2 Comparison</h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                            <CheckCircle2 className="h-3 w-3 text-green-500" />
+                            Baseline (Smart Contract)
+                          </p>
+                          <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
+                            {isLoadingContractBaseline ? (
+                              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                            ) : contractBaselineAngle2 ? (
+                              <img src={contractBaselineAngle2} alt="Baseline Angle 2" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="text-center p-4">
+                                <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                <p className="text-xs text-muted-foreground">No baseline</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3 text-orange-500" />
+                            Current (IPFS Upload)
+                          </p>
+                          <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
+                            {insforgeSecondViewUrl ? (
+                              <img src={insforgeSecondViewUrl} alt="Current Angle 2" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="text-center p-4">
+                                <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                <p className="text-xs text-muted-foreground">No image</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Analysis Results */}
+                  {integrityAnalysisResult && (
+                    <div className="mt-6 space-y-4">
+                      {/* Trust Score Display */}
+                      <div className="p-4 bg-background rounded-lg border">
+                        <div className="text-center">
+                          <h5 className="text-sm font-semibold mb-3">Trust Identity Score</h5>
+                          <div className="relative inline-block mb-4">
+                            <div className="w-20 h-20 rounded-full border-4 border-secondary/20 flex items-center justify-center">
+                              <svg
+                                className="w-20 h-20 absolute inset-0 transform -rotate-90"
+                                viewBox="0 0 120 120"
+                              >
+                                <circle
+                                  cx="60"
+                                  cy="60"
+                                  r="50"
+                                  stroke="currentColor"
+                                  strokeWidth="8"
+                                  fill="none"
+                                  className="text-secondary/20"
+                                />
+                                <circle
+                                  cx="60"
+                                  cy="60"
+                                  r="50"
+                                  stroke="currentColor"
+                                  strokeWidth="8"
+                                  fill="none"
+                                  strokeDasharray={`${2 * Math.PI * 50}`}
+                                  strokeDashoffset={`${
+                                    2 * Math.PI * 50 * (1 - Math.max(0, Math.min(100, integrityAnalysisResult.trustScore.aggregate_tis)) / 100)
+                                  }`}
+                                  className={
+                                    String(integrityAnalysisResult.trustScore.overall_assessment || "").toUpperCase().includes("SAFE")
+                                      ? "text-green-500"
+                                      : String(integrityAnalysisResult.trustScore.overall_assessment || "").toUpperCase().includes("MODERATE")
+                                      ? "text-orange-500"
+                                      : "text-red-500"
+                                  }
+                                  strokeLinecap="round"
+                                />
+                              </svg>
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-lg font-bold">
+                                  {Math.max(0, Math.min(100, integrityAnalysisResult.trustScore.aggregate_tis))}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div
+                            className={`inline-flex items-center px-3 py-2 rounded-full text-xs font-medium mb-2 ${
+                              String(integrityAnalysisResult.trustScore.overall_assessment || "").toUpperCase().includes("SAFE")
+                                ? "bg-green-500/20 text-green-700 border border-green-500/30"
+                                : String(integrityAnalysisResult.trustScore.overall_assessment || "").toUpperCase().includes("MODERATE")
+                                ? "bg-orange-500/20 text-orange-700 border border-orange-500/30"
+                                : "bg-red-500/20 text-red-700 border border-red-500/30"
+                            }`}
+                          >
+                            {String(integrityAnalysisResult.trustScore.overall_assessment || "").toUpperCase().includes("SAFE") ? (
+                              <>
+                                <CheckCircle2 className="w-3 h-3 mr-2" />
+                                SAFE
+                              </>
+                            ) : String(integrityAnalysisResult.trustScore.overall_assessment || "").toUpperCase().includes("MODERATE") ? (
+                              <>
+                                <AlertTriangle className="w-3 h-3 mr-2" />
+                                MODERATE RISK
+                              </>
+                            ) : (
+                              <>
+                                <AlertTriangle className="w-3 h-3 mr-2" />
+                                HIGH RISK
+                              </>
+                            )}
+                          </div>
+                          {!integrityAnalysisResult.passed && (
+                            <p className="text-xs text-red-600 font-medium mt-2">
+                              ⚠️ TIS Score below 40% - Approval blocked
+                            </p>
+                          )}
+                          {integrityAnalysisResult.trustScore.notes && (
+                            <p className="text-xs text-muted-foreground italic mt-2">{integrityAnalysisResult.trustScore.notes}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Differences List */}
+                      {integrityAnalysisResult.differences && integrityAnalysisResult.differences.length > 0 && (
+                        <div>
+                          <h5 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                            <AlertTriangle className="h-4 w-4 text-orange-500" />
+                            Detected Differences ({integrityAnalysisResult.differences.length})
+                          </h5>
+                          <div className="space-y-2">
+                            {integrityAnalysisResult.differences.map((diff, idx) => (
+                              <div
+                                key={idx}
+                                className={`p-3 rounded-lg border-l-4 ${
+                                  diff.severity === "high"
+                                    ? "bg-red-500/10 border-red-500"
+                                    : diff.severity === "medium"
+                                    ? "bg-orange-500/10 border-orange-500"
+                                    : "bg-yellow-500/10 border-yellow-500"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between">
+                                  <div>
+                                    <h6 className="font-semibold text-sm mb-1">{diff.location}</h6>
+                                    <p className="text-xs text-muted-foreground">{diff.description}</p>
+                                  </div>
+                                  <span
+                                    className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                      diff.severity === "high"
+                                        ? "bg-red-500/20 text-red-700"
+                                        : diff.severity === "medium"
+                                        ? "bg-orange-500/20 text-orange-700"
+                                        : "bg-yellow-500/20 text-yellow-700"
+                                    }`}
+                                  >
+                                    {diff.severity.toUpperCase()}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {(insforgeFirstViewUrl || insforgeSecondViewUrl) && !showIntegrityAnalysis && (
               <div className="mt-6 grid gap-4 md:grid-cols-2">
                 <div className="rounded-xl border p-4">
                   <div className="text-sm font-semibold mb-2">First view (angle 1)</div>
