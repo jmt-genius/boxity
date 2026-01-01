@@ -128,3 +128,50 @@ Your backend is **Flask-based**, modular, and ready for serverless (Vercel) or t
 - Add logging, metrics, and even model version consensus voting for highly regulated uses (pharma, food, luxury, etc).
 
 ---
+
+# How Gemini Powers Boxity's Backend
+
+## Where We Use Gemini
+
+**Main Image Analysis Pipeline** (`/analyze` endpoint)
+- Takes two images: baseline (original package) and current (package being verified)
+- Gemini Vision models compare them to detect tampering, damage, or changes
+- Uses `gemini-3-flash-preview` models in ensemble for accuracy
+
+## GenAI Integration Details
+
+**Multimodal Analysis**
+- Sends both images simultaneously to Gemini with structured prompts
+- AI identifies specific issues: dents, scratches, seal tampering, label changes, repackaging
+- Returns structured JSON with bounding boxes, confidence scores, and severity levels
+
+**Smart Prompting System**
+- Custom prompts with few-shot examples teach Gemini what to look for
+- Enforces strict JSON schema responses for consistent API output
+- Includes explainability - AI explains why it flagged each issue
+
+## Computer Vision Part
+
+**Dual Pipeline Approach**
+- **Primary**: Gemini Vision handles complex analysis (lighting changes, subtle damage, counterfeit detection)
+- **Fallback**: OpenCV classical vision for basic differences when Gemini fails or has low confidence
+- Gemini catches things traditional CV misses (like sophisticated counterfeits or packaging swaps)
+
+## How It Fits Boxity
+
+**Trust Integrity Score (TIS) Calculation**
+- Gemini assigns severity levels (HIGH/MEDIUM/LOW) to each detected issue
+- Each issue has a TIS delta (negative points)
+- Final score determines package safety: SAFE (80-100), MODERATE_RISK (40-79), HIGH_RISK (0-39)
+
+**Real-World Impact**
+- Detects package tampering humans would miss
+- Identifies counterfeit products by comparing packaging details
+- Catches shipping damage for insurance claims
+- Provides explainable AI results for legal/business use
+
+**Why Gemini Over Traditional CV**
+- Understands context (knows a dent is worse than a shadow)
+- Handles varying lighting and angles automatically
+- Can detect sophisticated tampering attempts
+- Provides human-readable explanations for decisions
