@@ -1,73 +1,219 @@
-# React + TypeScript + Vite
+# Boxity – QR Provenance Demo
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A production-ready demo for **QR-based supply chain provenance tracking**, built with **Next.js, TypeScript, TailwindCSS, and shadcn**.  
+The project simulates end-to-end blockchain-backed logging and verification of product batches without requiring IoT hardware.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Live Deployment
 
-## React Compiler
+- **Frontend App:** [https://boxity.vercel.app/](https://boxity.vercel.app/)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the ESLint configuration
+## Table of Contents
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+1. [Project Overview](#project-overview)  
+2. [Features](#features)  
+3. [Demo Batches](#demo-batches)  
+4. [Usage Guide](#usage-guide)  
+5. [Design System](#design-system)  
+6. [Architecture & Project Structure](#architecture--project-structure)  
+7. [Technology Stack](#technology-stack)  
+8. [Local Quickstart](#local-quickstart)  
+9. [Production Build](#production-build)  
+10. [Notes](#notes)
 
+---
+
+## Project Overview
+
+Boxity provides a simple **blockchain-style provenance system** where each product batch is assigned a **unique QR identity**.  
+Each custody transfer is logged with cryptographic hashes and simulated blockchain ledger references.
+
+The demo showcases:
+
+- **QR generation & scanning**  
+- **Camera-based auto-fill for event logging**  
+- **Immutable event logging per batch**  
+- **Batch verification with transparent timelines**
+
+---
+
+## Features
+
+| Feature                   | Description                                                                 |
+| :------------------------ | :-------------------------------------------------------------------------- |
+| **Home Page**             | Hero section with tagline and call-to-action                                |
+| **Admin Dashboard**       | Create product batches, generate and download QR codes                      |
+| **QR Scanning**           | Camera-based scanning with auto-submit and fallback to file upload           |
+| **Event Logging**         | Record custody events with actor, role, notes, and images                   |
+| **Verify Timeline**       | View all custody events with timestamps, hashes, and ledger refs             |
+| **Light/Dark Theme**      | Pure black dark mode with persistent preference                             |
+| **Responsive Design**     | Fully responsive for desktop, tablet, and mobile                            |
+| **Animations**            | Smooth interactions using Framer Motion                                     |
+
+---
+
+## Demo Batches
+
+Preloaded data is included for demo purposes:
+
+| Batch ID      | Product           | Events |
+| :------------ | :---------------- | :----- |
+| `CHT-001-ABC` | VitaTabs 10mg     | 2      |
+| `CHT-002-XYZ` | ColdVax           | 1      |
+| `CHT-DEMO`    | Generic Demo Item | 2      |
+
+---
+
+## Usage Guide
+
+### Home (`/`)
+- View the hero section.  
+- Click **“Try it out”** to navigate to Admin.
+
+### Admin (`/admin`)
+- Create or manage demo batches.  
+- Generate QR codes (PNG) for each batch.
+
+### Log Event (`/log-event`)
+- Select a batch or scan a QR.  
+- Add actor details, roles, and notes.  
+- Events are logged with hash + ledger reference.
+
+### Verify (`/verify`)
+- Enter a Batch ID (e.g., `CHT-001-ABC`).  
+- Retrieve the entire event timeline with cryptographic proofs.
+
+### Theme Toggle
+- Switch between **light** and **dark** themes.  
+- Preference is saved in localStorage.
+
+### Reset Demo Data
+Run this in the browser console:
 ```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+localStorage.removeItem("boxity-batches");
+```
+Then refresh the page.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+---
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Design System
+
+- **Primary Color:** `#4A9EFF` (blue)  
+- **Dark Mode:** Pure black (`#000000`) backgrounds  
+- **UI Components:** shadcn/ui + TailwindCSS  
+- **Animations:** Framer Motion for smooth transitions
+
+---
+
+## Architecture & Project Structure
+
+### Data Model
+Each event generates:
+- **Hash:** Pseudo SHA-256 hash (64 chars)  
+- **Ledger Reference:** Simulated blockchain transaction ID (`0x...`)
+
+Data is persisted in browser **localStorage** (`boxity-batches`).
+
+### Project Structure
+```
+├── .gitignore
+├── README.md
+├── bun.lockb
+├── components.json
+├── eslint.config.js
+├── index.html
+├── package-lock.json
+├── package.json
+├── postcss.config.js
+├── public
+│   ├── favicon.ico
+│   ├── placeholder.svg
+│   └── robots.txt
+├── src
+│   ├── App.css
+│   ├── App.tsx
+│   ├── components
+│   │   ├── AnimatedTimeline.tsx
+│   │   ├── Box3D.tsx
+│   │   ├── GlassCard.tsx
+│   │   ├── Navbar.tsx
+│   │   ├── QRScanAnimator.tsx
+│   │   ├── QRScanner.tsx
+│   │   └── ui/ [...shadcn components]
+│   ├── contexts/ThemeContext.tsx
+│   ├── hooks/ [...custom hooks]
+│   ├── lib/ [demoData.ts, utils.ts]
+│   ├── pages/ [Index, Admin, LogEvent, Verify, NotFound]
+│   └── main.tsx
+├── tailwind.config.ts
+├── tsconfig.json
+├── vite.config.ts
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+---
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Technology Stack
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+| Layer          | Technology                                  |
+| :------------- | :------------------------------------------ |
+| **Framework**  | React 18 + Vite                             |
+| **Language**   | TypeScript                                  |
+| **Styling**    | TailwindCSS + shadcn/ui                     |
+| **Animations** | Framer Motion                               |
+| **QR**         | `qrcode` + `html5-qrcode`                   |
+| **State**      | LocalStorage-based persistence              |
+| **Routing**    | React Router                                |
+
+---
+
+## Local Quickstart
+
+### Prerequisites
+- Node.js v18+  
+- npm v9+
+
+### Run Locally
+```bash
+# Install dependencies
+npm install
+
+# Start dev server
+npm run dev
 ```
+
+Visit [http://localhost:8080](http://localhost:8080)
+
+---
+
+## Production Build
+
+```bash
+npm run build
+```
+
+The optimized output is generated in `/dist`.
+
+---
+
+## Notes
+
+- Demo app for now;  
+- Data persistence is simulated via browser `localStorage`.  
+- Images reference `/demo/` folder (placeholders).  
+- QR codes encode batch metadata in JSON.
+
+---
+**Integrations & How We Use Them**
+- **Google Gemini**: Primary LLM for summarization, RAG lookups, and QA; backend entrypoint in [boxity_backend/routes/ai.py](boxity_backend/routes/ai.py) and configuration in [boxity_backend/config.py](boxity_backend/config.py).
+<!-- - **Open Router**: LLM routing/proxy that lets us switch providers (Gemini, etc.) without code changes; used by the backend AI layer ([boxity_backend/config.py](boxity_backend/config.py), [boxity_backend/routes/ai.py](boxity_backend/routes/ai.py)). -->
+- **Eleven Labs**: Text-to-speech for playback of verification timelines and notifications; implemented in [app/boxity_mobile/services/tts.ts](app/boxity_mobile/services/tts.ts).
+- **Kiro**: Attestation/identity integration used for signer/actor verification and optional credential checks; integration points are client API flows and backend routes (see [app/boxity_mobile/services/api.ts](app/boxity_mobile/services/api.ts) and backend AI routes).
+- **Insforge**: Image/asset-processing and augmentation provider used by the vision pipeline for image analysis/OCR to save in db and use Auth of it; referenced by [boxity_backend/vision.py](boxity_backend/vision.py).
+- **Solana**: Target blockchain for on-chain proof anchoring; demo currently uses simulated ledger refs, with on-chain integration code in [boxity_frontend/src/lib/web3.ts](boxity_frontend/src/lib/web3.ts).
+- **Requestly**: Developer tool for request mocking/rewriting during local testing—useful for testing API and AI request flows during development.
+
+How they work together
+- Scan/upload image → vision pipeline (Insforge) → event created/hashed → backend logs and optional on-chain anchor (Solana) → summaries/QA served by Google Gemini via Open Router → playback via Eleven Labs; Kiro provides optional identity attestations; Requestly helps devs mock and test flows locally.
