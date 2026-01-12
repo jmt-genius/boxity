@@ -44,7 +44,7 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
     setIsAuthenticated(false);
   };
 
-  const login = async (email: string): Promise<void> => {
+  const login = async (email: string, name: string, role: UserRole): Promise<void> => {
     try {
       // Create a simple token
       const token = `demo_token_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -52,8 +52,8 @@ export const [AuthProvider, useAuth] = createContextHook(() => {
       const newUser: User = {
         id: `user_${Date.now()}`,
         email: email.toLowerCase().trim(),
-        role: 'WAREHOUSE' as UserRole,
-        name: email.split('@')[0],
+        role: role,
+        name: name.trim(),
       };
 
       // Store tokens and user data

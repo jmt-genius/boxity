@@ -143,20 +143,20 @@ const Admin = () => {
       return;
     }
 
-    if (!connectedAddress) {
-      toast({
-        title: "Error",
-        description: "Please connect your wallet first",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setIsCreating(true);
     const finalBatchId = batchId || generateBatchId();
 
     try {
-      // Create batch on blockchain with separate baseline images
+      // Create batch on Ethereum
+      if (!connectedAddress) {
+        toast({
+          title: "Error",
+          description: "Please connect your wallet first",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const tx = await web3Service.createBatch(
         finalBatchId,
         productName,
@@ -490,7 +490,7 @@ const Admin = () => {
           </Card>
         </div>
 
-        {/* Contract Batches Table */}
+        {/* Blockchain Batches Table */}
         {connectedAddress && (
           <Card className="mt-8" id="batch-table">
             <CardHeader>
