@@ -79,7 +79,7 @@ const Admin = () => {
       });
       const response = await request.json();
       if (response.data?.cid) {
-        return `https://ipfs.io/ipfs/${response.data.cid}`;
+        return `https://chocolate-worldwide-earwig-657.mypinata.cloud/ipfs/${response.data.cid}`;
       } else {
         throw new Error("No CID returned from Pinata.");
       }

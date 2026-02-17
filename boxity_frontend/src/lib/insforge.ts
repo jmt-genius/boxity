@@ -1,17 +1,17 @@
-import { createClient } from '@insforge/sdk';
+import { supabase } from '@/lib/supabase';
 
-// InsForge configuration
-const INSFORGE_BASE_URL = import.meta.env.VITE_INSFORGE_BASE_URL || 'https://fu5pg5wg.ap-southeast.insforge.app';
-const INSFORGE_ANON_KEY = import.meta.env.VITE_INSFORGE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3OC0xMjM0LTU2NzgtOTBhYi1jZGVmMTIzNDU2NzgiLCJlbWFpbCI6ImFub25AaW5zZm9yZ2UuY29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY4Nzk5OTB9.gw8M19D_s-HFW3PrDvX483SIDUMewjqBHALxKdJaW_8';
-
-// Create InsForge client
-export const insforge = createClient({
-  baseUrl: INSFORGE_BASE_URL,
-  anonKey: INSFORGE_ANON_KEY,
-});
+// Deprecated: Alias for Supabase client
+export const insforge = {
+  auth: {
+    ...supabase.auth,
+    // Add compatibility wrappers if needed
+    getCurrentUser: async () => supabase.auth.getSession(),
+  },
+  database: supabase, // Direct alias since Supabase client IS the database client
+};
 
 export const INSFORGE_CONFIG = {
-  baseUrl: INSFORGE_BASE_URL,
-  anonKey: INSFORGE_ANON_KEY,
+  baseUrl: import.meta.env.VITE_SUPABASE_URL,
+  anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY,
 };
 

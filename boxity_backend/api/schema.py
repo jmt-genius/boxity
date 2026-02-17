@@ -51,7 +51,7 @@ RESPONSE_SCHEMA: Dict[str, Any] = {
         "current_image_info": {"type": "object"},
         "analysis_metadata": ANALYSIS_METADATA_SCHEMA
     },
-    "required": ["differences", "aggregate_tis", "overall_assessment", "confidence_overall", "notes"],
+    "required": ["differences"],
     "additionalProperties": True,
 }
 

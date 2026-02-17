@@ -1,4 +1,5 @@
-# api/index.py (improved logging & runtime checks)
+# api/index.py — OpenCV preprocessing + Gemini analysis (one angle per call)
+import logging
 import os
 import sys
 import traceback
@@ -9,14 +10,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, request, jsonify
 
-# Auth0 JWT validation
+# Auth
 try:
     from .auth import optional_auth, require_auth
     AUTH_AVAILABLE = True
 except Exception as e:
     AUTH_AVAILABLE = False
-    optional_auth = lambda f: f  # No-op decorator
-    require_auth = lambda f: f  # No-op decorator
+    optional_auth = lambda f: f
+    require_auth = lambda f: f
     print("Auth module import failed:", e, file=sys.stderr)
 
 # CORS
@@ -24,13 +25,6 @@ try:
     from flask_cors import CORS
 except Exception:
     CORS = None
-
-# Pillow
-try:
-    from PIL import Image, ExifTags
-except Exception:
-    Image = None
-    ExifTags = None
 
 # requests
 try:
@@ -44,20 +38,21 @@ try:
 except Exception:
     genai = None
 
-# modular helpers (ai / vision)
+# Gemini AI helper
 try:
     from .ai import call_gemini_ensemble
 except Exception as e:
     call_gemini_ensemble = None
     print("AI helper import failed:", e, file=sys.stderr)
 
+# OpenCV vision helper (preprocessing / alignment)
 try:
     from .vision import align_and_normalize
 except Exception as e:
     align_and_normalize = None
     print("Vision helper import failed:", e, file=sys.stderr)
 
-# opencv / numpy may be heavy -> check
+# OpenCV + numpy (for encoding preprocessed images)
 try:
     import cv2  # type: ignore
 except Exception as e:
@@ -70,11 +65,17 @@ except Exception as e:
     np = None
     print("numpy import failed:", str(e), file=sys.stderr)
 
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 if CORS is not None:
     CORS(app, resources={r"/analyze": {"origins": "*"}})
 
-SCORING_VERSION = "cv-v3"
+SCORING_VERSION = "cv-gemini-v1"
+logger.info("=== api/index.py loaded === SCORING_VERSION=%s, cv2=%s, genai=%s, vision=%s",
+            SCORING_VERSION, cv2 is not None, genai is not None, align_and_normalize is not None)
 
 @app.after_request
 def _add_cors_headers(response):
@@ -91,14 +92,18 @@ def _add_cors_headers(response):
 
 IMAGE_PACK_DELIMITER = "||"
 
+# ── helpers ──────────────────────────────────────────────
+
 def _configure_genai():
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("No GOOGLE_API_KEY/GEMINI_API_KEY set in environment", file=sys.stderr)
+        logger.error("No GOOGLE_API_KEY/GEMINI_API_KEY set in environment")
         return False
     if genai is None:
-        print("google.generativeai not installed or failed to import", file=sys.stderr)
+        logger.error("google.generativeai not installed or failed to import")
         return False
+    # Strip quotes in case .env wraps the value
+    api_key = api_key.strip().strip('"').strip("'")
     try:
         genai.configure(api_key=api_key)
         return True
@@ -114,14 +119,11 @@ def home():
 def about():
     return 'About'
 
-def _load_image_bytes(source: str) -> Tuple[Optional[bytes], Optional[str]]:
-    """Loads image bytes and MIME type from a URL or base64 data URI.
 
-    Returns: (bytes|None, mime_type|None)
-    """
+def _load_image_bytes(source: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """Load image bytes and MIME type from a URL or base64 data URI."""
     if not source:
         return None, None
-    # Base64 data URI
     if source.startswith('data:'):
         try:
             header, b64 = source.split(',', 1)
@@ -129,13 +131,11 @@ def _load_image_bytes(source: str) -> Tuple[Optional[bytes], Optional[str]]:
             return base64.b64decode(b64), mime
         except Exception:
             return None, None
-    # Heuristic: very long string without data: header is likely base64 (assume jpeg)
     if len(source) > 256 and not source.startswith('http'):
         try:
             return base64.b64decode(source), 'image/jpeg'
         except Exception:
             return None, None
-    # Otherwise, treat as URL
     if requests is None:
         return None, None
     try:
@@ -147,29 +147,8 @@ def _load_image_bytes(source: str) -> Tuple[Optional[bytes], Optional[str]]:
         return None, None
     return None, None
 
-def _get_image_info(img_bytes: Optional[bytes]) -> Dict[str, Any]:
-    info: Dict[str, Any] = {"resolution": None, "exif_present": False, "camera_make": None, "camera_model": None, "datetime": None}
-    if Image is None or not img_bytes:
-        return info
-    try:
-        with Image.open(io.BytesIO(img_bytes)) as im:
-            info["resolution"] = [im.width, im.height]
-            exif = getattr(im, "_getexif", lambda: None)()
-            if exif:
-                info["exif_present"] = True
-                inv = {v: k for k, v in ExifTags.TAGS.items()} if ExifTags else {}
-                def get_tag(tag_name: str) -> Optional[str]:
-                    key = inv.get(tag_name)
-                    return str(exif.get(key)) if key in exif else None
-                info["camera_make"] = get_tag("Make")
-                info["camera_model"] = get_tag("Model")
-                info["datetime"] = get_tag("DateTimeOriginal") or get_tag("DateTime")
-    except Exception:
-        pass
-    return info
 
 def _normalize_diff_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    # Ensure strict schema fields exist with fallbacks
     return {
         "id": str(item.get("id")) if item.get("id") is not None else "diff-unknown",
         "region": item.get("region") or "unknown",
@@ -183,506 +162,281 @@ def _normalize_diff_item(item: Dict[str, Any]) -> Dict[str, Any]:
         "tis_delta": int(item.get("tis_delta") or 0),
     }
 
-def _split_packed(source: Any) -> List[str]:
-    if source is None:
-        return []
-    if isinstance(source, list):
-        out: List[str] = []
-        for s in source:
-            if s is None:
-                continue
-            v = str(s).strip()
-            if v:
-                out.append(v)
-        return out
-    raw = str(source).strip()
-    if not raw:
-        return []
-    if IMAGE_PACK_DELIMITER in raw:
-        return [s.strip() for s in raw.split(IMAGE_PACK_DELIMITER) if str(s).strip()]
-    return [raw]
 
 def _clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
+
 def _compute_overall(differences: List[Dict[str, Any]]) -> Tuple[int, str, float, str]:
-    """Enhanced TIS calculation with proper difference weighting.
-    
-    Returns: (tis_score, assessment, confidence, notes)
-    """
+    """Compute TIS score, assessment, confidence and notes from Gemini differences."""
     if not differences:
         return 100, "SAFE", 0.95, "No differences detected - product integrity maintained"
-    
-    # Start with perfect score
+
     tis = 100
     total_confidence = 0.0
     severity_weights = {"HIGH": 1.0, "MEDIUM": 0.6, "LOW": 0.3}
     critical_issues = []
     high_severity_count = 0
     medium_severity_count = 0
-    
+
     for d in differences:
         try:
-            # Apply TIS delta - this should reduce the score
-            tis_delta = int(d.get("tis_delta", 0))
-            tis += tis_delta  # tis_delta is negative, so this reduces the score
-            
-            # Weight confidence by severity
+            tis += int(d.get("tis_delta", 0))
             severity = str(d.get("severity", "LOW")).upper()
             weight = severity_weights.get(severity, 0.3)
             confidence = float(d.get("confidence", 0.5))
             total_confidence += confidence * weight
-            
-            # Count severities
             if severity == "HIGH":
                 high_severity_count += 1
             elif severity == "MEDIUM":
                 medium_severity_count += 1
-            
-            # Track critical issues
             if severity == "HIGH" and confidence > 0.6:
                 issue_type = str(d.get("type", "unknown"))
                 if issue_type in ["seal_tamper", "repackaging", "digital_edit"]:
                     critical_issues.append(issue_type)
-                    
         except Exception:
             continue
-    
-    # Calculate weighted confidence
-    avg_confidence = total_confidence / max(1, len(differences)) if differences else 0.0
-    
-    # Clamp TIS score to ensure it's never above 100
-    tis = _clamp(tis, 0, 100)
 
-    # Avoid unrealistic UI of exactly 0 when we have differences; reserve 0 only for explicit handling.
+    avg_confidence = total_confidence / max(1, len(differences))
+    tis = _clamp(tis, 0, 100)
     if differences and tis == 0:
         tis = 1
-    
-    # Enhanced assessment logic based on actual TIS score
+
     if tis >= 80:
-        assessment = "SAFE"
-        notes = "Product integrity maintained - safe to proceed"
+        assessment, notes = "SAFE", "Product integrity maintained - safe to proceed"
     elif tis >= 40:
-        assessment = "MODERATE_RISK"
-        notes = "Moderate risk detected - supervisor review recommended"
+        assessment, notes = "MODERATE_RISK", "Moderate risk detected - supervisor review recommended"
     else:
-        assessment = "HIGH_RISK"
-        notes = "High risk detected - immediate quarantine required"
-    
-    # Additional overrides for critical security issues
+        assessment, notes = "HIGH_RISK", "High risk detected - immediate quarantine required"
+
     if critical_issues:
         if "seal_tamper" in critical_issues:
-            tis = min(tis, 20)  # Force very high risk for seal tampering
-            assessment = "HIGH_RISK"
-            notes = f"Critical security breach detected: {', '.join(critical_issues)} - immediate quarantine required"
+            tis = min(tis, 20); assessment = "HIGH_RISK"
+            notes = f"Critical security breach: {', '.join(critical_issues)} - quarantine"
         elif "repackaging" in critical_issues:
-            tis = min(tis, 15)  # Force highest risk for repackaging
-            assessment = "HIGH_RISK"
-            notes = f"Product substitution detected: {', '.join(critical_issues)} - immediate quarantine required"
+            tis = min(tis, 15); assessment = "HIGH_RISK"
+            notes = f"Product substitution: {', '.join(critical_issues)} - quarantine"
         elif "digital_edit" in critical_issues:
-            tis = min(tis, 10)  # Force highest risk for digital tampering
-            assessment = "HIGH_RISK"
+            tis = min(tis, 10); assessment = "HIGH_RISK"
             notes = "Digital tampering detected - highest security risk"
-    
-    # Additional logic for multiple high-severity issues
+
     if high_severity_count >= 2:
-        tis = min(tis, 30)
-        assessment = "HIGH_RISK"
-        notes = f"Multiple high-severity issues detected ({high_severity_count} issues) - immediate quarantine required"
+        tis = min(tis, 30); assessment = "HIGH_RISK"
+        notes = f"Multiple high-severity issues ({high_severity_count}) - quarantine"
     elif high_severity_count >= 1 and medium_severity_count >= 2:
-        tis = min(tis, 35)
-        assessment = "HIGH_RISK"
-        notes = f"Multiple damage issues detected - immediate quarantine required"
-    
+        tis = min(tis, 35); assessment = "HIGH_RISK"
+        notes = "Multiple damage issues detected - quarantine"
+
     return tis, assessment, avg_confidence, notes
 
-def _call_gemini(baseline: Tuple[Optional[bytes], Optional[str]], current: Tuple[Optional[bytes], Optional[str]], view_label: Optional[str] = None) -> List[Dict[str, Any]]:
+
+def _call_gemini(
+    baseline: Tuple[Optional[bytes], Optional[str]],
+    current: Tuple[Optional[bytes], Optional[str]],
+    view_label: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     if call_gemini_ensemble is None:
+        print("Gemini module not loaded", file=sys.stderr)
         return []
     try:
         items = call_gemini_ensemble(baseline, current, view_label=view_label)
         return [_normalize_diff_item(it) for it in items if isinstance(it, dict)]
-    except Exception:
+    except Exception as e:
+        print(f"Gemini call failed for {view_label}: {e}", file=sys.stderr)
         return []
 
-def _assess_from_tis(tis: int) -> Tuple[str, str]:
-    if tis >= 80:
-        return "SAFE", "Product integrity maintained - safe to proceed"
-    if tis >= 40:
-        return "MODERATE_RISK", "Moderate risk detected - supervisor review recommended"
-    return "HIGH_RISK", "High risk detected - immediate quarantine required"
 
-def _region_from_bbox(x: int, y: int, w: int, h: int, img_w: int, img_h: int) -> str:
-    cx = x + (w / 2.0)
-    cy = y + (h / 2.0)
-    if cy < img_h / 3.0:
-        v = "top"
-    elif cy > (2.0 * img_h) / 3.0:
-        v = "bottom"
-    else:
-        v = "middle"
-    if cx < img_w / 3.0:
-        u = "left"
-    elif cx > (2.0 * img_w) / 3.0:
-        u = "right"
-    else:
-        u = "center"
-    return f"{v}-{u}"
+def _preprocess_with_cv(baseline_bytes: bytes, current_bytes: bytes) -> Tuple[bytes, bytes]:
+    """Use OpenCV to align and normalize images before sending to Gemini.
+    
+    Returns the preprocessed image bytes (JPEG encoded).
+    Falls back to originals if OpenCV is unavailable or fails.
+    """
+    logger.info("[PREPROCESS] Starting OpenCV preprocessing. cv2=%s, np=%s, align_fn=%s",
+                cv2 is not None, np is not None, align_and_normalize is not None)
+    if cv2 is None or np is None or align_and_normalize is None:
+        logger.warning("[PREPROCESS] OpenCV preprocessing unavailable, using raw images")
+        return baseline_bytes, current_bytes
 
-def _decode_cv2(img_bytes: bytes):
-    if cv2 is None or np is None:
-        return None
-    arr = np.frombuffer(img_bytes, dtype=np.uint8)
-    im = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    return im
-
-def _classical_diff_regions(baseline_bytes: bytes, current_bytes: bytes) -> List[Dict[str, Any]]:
-    if cv2 is None or np is None:
-        return []
-
-    bgr1 = _decode_cv2(baseline_bytes)
-    bgr2 = _decode_cv2(current_bytes)
-    if bgr1 is None or bgr2 is None:
-        return []
-
-    h1, w1 = bgr1.shape[:2]
-    h2, w2 = bgr2.shape[:2]
-    h = min(h1, h2)
-    w = min(w1, w2)
-    if h < 32 or w < 32:
-        return []
-
-    if (h1, w1) != (h, w):
-        bgr1 = cv2.resize(bgr1, (w, h), interpolation=cv2.INTER_AREA)
-    if (h2, w2) != (h, w):
-        bgr2 = cv2.resize(bgr2, (w, h), interpolation=cv2.INTER_AREA)
-
-    g1 = cv2.cvtColor(bgr1, cv2.COLOR_BGR2GRAY)
-    g2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2GRAY)
-
-    g1 = cv2.GaussianBlur(g1, (5, 5), 0)
-    g2 = cv2.GaussianBlur(g2, (5, 5), 0)
-
-    absdiff = cv2.absdiff(g1, g2)
-    mean_abs = float(np.mean(absdiff)) / 255.0
-
-    _, th = cv2.threshold(absdiff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=1)
-    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
-
-    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    img_area = float(w * h)
-
-    diffs: List[Dict[str, Any]] = []
-    idx = 0
-    total_changed_area = 0.0
-    candidates = []
-    for c in contours:
-        area = float(cv2.contourArea(c))
-        if area <= 0:
-            continue
-        area_ratio = area / img_area
-        if area_ratio < 0.0015:
-            continue
-        candidates.append((area, c))
-
-    candidates.sort(key=lambda t: t[0], reverse=True)
-    for area, c in candidates[:3]:
-        area_ratio = area / img_area
-        x, y, bw, bh = cv2.boundingRect(c)
-        region = _region_from_bbox(int(x), int(y), int(bw), int(bh), w, h)
-        total_changed_area += area
-
-        if area_ratio >= 0.04:
-            severity = "HIGH"
-            tis_delta = -int(_clamp(int(round(area_ratio * 120)), 6, 14))
-            confidence = min(0.98, 0.75 + area_ratio)
-            suggested_action = "Quarantine"
-        elif area_ratio >= 0.015:
-            severity = "MEDIUM"
-            tis_delta = -int(_clamp(int(round(area_ratio * 90)), 4, 10))
-            confidence = min(0.95, 0.65 + (area_ratio * 2.0))
-            suggested_action = "Review"
+    try:
+        logger.info("[PREPROCESS] Calling align_and_normalize with %d / %d bytes",
+                    len(baseline_bytes), len(current_bytes))
+        b_norm, c_norm = align_and_normalize(baseline_bytes, current_bytes)
+        if b_norm is not None and c_norm is not None:
+            _, b_enc = cv2.imencode('.jpg', b_norm, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            _, c_enc = cv2.imencode('.jpg', c_norm, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            logger.info("[PREPROCESS] OpenCV preprocessing SUCCESSFUL. Output sizes: %d / %d bytes",
+                        len(b_enc.tobytes()), len(c_enc.tobytes()))
+            return b_enc.tobytes(), c_enc.tobytes()
         else:
-            severity = "LOW"
-            tis_delta = -int(_clamp(int(round(area_ratio * 70)), 2, 6))
-            confidence = min(0.9, 0.55 + (area_ratio * 3.0))
-            suggested_action = "Review"
+            logger.warning("[PREPROCESS] align_and_normalize returned None, using raw images")
+            return baseline_bytes, current_bytes
+    except Exception as e:
+        logger.error("[PREPROCESS] OpenCV preprocessing FAILED: %s, using raw images", e)
+        return baseline_bytes, current_bytes
 
-        diffs.append({
-            "id": f"cv-{idx}",
-            "region": region,
-            "bbox": [int(x), int(y), int(bw), int(bh)],
-            "type": "physical_damage",
-            "description": "Classical CV detected visual change consistent with damage/deformation.",
-            "severity": severity,
-            "confidence": float(confidence),
-            "explainability": [],
-            "suggested_action": suggested_action,
-            "tis_delta": int(tis_delta),
-        })
-        idx += 1
 
-    changed_ratio = float(total_changed_area / img_area) if img_area > 0 else 0.0
-    if not diffs:
-        if mean_abs >= 0.06:
-            impact = max(mean_abs * 120.0, changed_ratio * 200.0)
-            diffs.append({
-                "id": "cv-global",
-                "region": "global",
-                "bbox": None,
-                "type": "global_mismatch",
-                "description": "Classical CV detected a strong global mismatch between images.",
-                "severity": "HIGH" if mean_abs >= 0.12 else "MEDIUM",
-                "confidence": 0.85 if mean_abs >= 0.12 else 0.7,
-                "explainability": [],
-                "suggested_action": "Quarantine" if mean_abs >= 0.12 else "Review",
-                "tis_delta": -int(_clamp(int(round(impact)), 8, 26)) if mean_abs >= 0.12 else -int(_clamp(int(round(impact * 0.8)), 5, 18)),
-            })
-    else:
-        if mean_abs >= 0.10 or changed_ratio >= 0.06:
-            impact = max(mean_abs * 140.0, changed_ratio * 240.0)
-            diffs.append({
-                "id": "cv-global-severity",
-                "region": "global",
-                "bbox": None,
-                "type": "global_damage_indicator",
-                "description": "Classical CV indicates widespread change across the package surface.",
-                "severity": "HIGH",
-                "confidence": 0.9,
-                "explainability": [],
-                "suggested_action": "Quarantine",
-                "tis_delta": -int(_clamp(int(round(impact)), 8, 24)),
-            })
-
-    return diffs
+# ── core analysis ────────────────────────────────────────
 
 def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[str, Any]:
+    """Analyze ONE angle: OpenCV preprocess → Gemini analysis → TIS scoring."""
+    logger.info("======== _analyze_pair START [%s] ========", view_label)
+    logger.info("[LOAD] Loading baseline image (first 80 chars): %s", baseline_src[:80] + "...")
     baseline_bytes, baseline_mime = _load_image_bytes(baseline_src)
+    logger.info("[LOAD] Loading current image (first 80 chars): %s", current_src[:80] + "...")
     current_bytes, current_mime = _load_image_bytes(current_src)
+
+    logger.info("[LOAD] baseline=%s bytes, mime=%s | current=%s bytes, mime=%s",
+                len(baseline_bytes) if baseline_bytes else 0, baseline_mime,
+                len(current_bytes) if current_bytes else 0, current_mime)
 
     if not baseline_bytes:
         raise ValueError(f"Failed to load baseline image for {view_label}")
     if not current_bytes:
         raise ValueError(f"Failed to load current image for {view_label}")
 
-    baseline_info = _get_image_info(baseline_bytes)
-    current_info = _get_image_info(current_bytes)
+    cv_used = False
 
-    differences = _call_gemini((baseline_bytes, baseline_mime), (current_bytes, current_mime), view_label=view_label)
-    gemini_diff_count = len(differences)
+    # STEP 1: OpenCV preprocessing (alignment + normalization)
+    logger.info("[STEP 1] Running OpenCV preprocessing...")
+    prep_baseline, prep_current = _preprocess_with_cv(baseline_bytes, current_bytes)
+    if prep_baseline is not baseline_bytes:
+        cv_used = True
+        baseline_mime = "image/jpeg"
+        current_mime = "image/jpeg"
+    logger.info("[STEP 1] cv_used=%s, prep_baseline=%d bytes, prep_current=%d bytes",
+                cv_used, len(prep_baseline), len(prep_current))
+
+    # STEP 2: Send preprocessed images to Gemini for analysis
+    logger.info("[STEP 2] Calling Gemini with view_label=%s...", view_label)
+    differences = _call_gemini(
+        (prep_baseline, baseline_mime or "image/jpeg"),
+        (prep_current, current_mime or "image/jpeg"),
+        view_label=view_label,
+    )
+
+    logger.info("[STEP 2] Gemini returned %d differences", len(differences))
+    for i, d in enumerate(differences):
+        logger.info("  diff[%d]: type=%s severity=%s region=%s desc=%s",
+                    i, d.get('type'), d.get('severity'), d.get('region'), (d.get('description', '')[:80]))
+
     for d in differences:
         d["view"] = view_label
 
-    avg_conf = sum(d.get("confidence", 0) for d in differences) / max(1, len(differences)) if differences else 0.0
-    total_impact = sum(abs(int(d.get("tis_delta", 0))) for d in differences) if differences else 0
-
-    cv_ready = bool(cv2 is not None and np is not None)
-    cv_used = False
-
-    if (not differences or avg_conf < 0.6 or total_impact == 0) and baseline_bytes and current_bytes:
-        cv_regions = []
-        try:
-            if align_and_normalize is not None and cv2 is not None:
-                ab, ac = align_and_normalize(baseline_bytes, current_bytes)
-                if ab is not None and ac is not None:
-                    cv_regions = _classical_diff_regions(cv2.imencode('.jpg', ab)[1].tobytes(), cv2.imencode('.jpg', ac)[1].tobytes())
-            if not cv_regions:
-                cv_regions = _classical_diff_regions(baseline_bytes, current_bytes)
-        except Exception as e:
-            print("classical diff error:", str(e), file=sys.stderr)
-            cv_regions = _classical_diff_regions(baseline_bytes, current_bytes)
-
-        if cv_regions:
-            cv_used = True
-            for r in cv_regions:
-                r["view"] = view_label
-            if differences:
-                seen = {d.get("id") for d in differences}
-                for r in cv_regions:
-                    if r.get("id") not in seen:
-                        differences.append(r)
-            else:
-                differences = cv_regions
-
+    # STEP 3: Compute TIS score from Gemini findings
     tis, assessment, conf_overall, notes = _compute_overall(differences)
+    logger.info("[STEP 3] TIS=%d assessment=%s confidence=%.2f notes=%s", tis, assessment, conf_overall, notes)
+    logger.info("======== _analyze_pair END [%s] ========", view_label)
 
     return {
         "view": view_label,
         "differences": differences,
-        "baseline_image_info": baseline_info,
-        "current_image_info": current_info,
         "aggregate_tis": tis,
         "overall_assessment": assessment,
         "confidence_overall": conf_overall,
         "notes": notes,
+        "can_upload": bool(tis >= 40),
         "analysis_metadata": {
             "total_differences": len(differences),
             "high_severity_count": len([d for d in differences if str(d.get("severity", "")).upper() == "HIGH"]),
             "medium_severity_count": len([d for d in differences if str(d.get("severity", "")).upper() == "MEDIUM"]),
             "low_severity_count": len([d for d in differences if str(d.get("severity", "")).upper() == "LOW"]),
-            "analysis_timestamp": str(datetime.now().isoformat()) if 'datetime' in globals() else "unknown",
+            "analysis_timestamp": str(datetime.now().isoformat()),
             "scoring_version": SCORING_VERSION,
-            "gemini_diff_count": int(gemini_diff_count),
-            "cv_ready": bool(cv_ready),
-            "cv_used": bool(cv_used),
+            "gemini_diff_count": len(differences),
+            "cv_used": cv_used,
         },
     }
 
+
+# ── route ────────────────────────────────────────────────
+
 @app.route("/analyze", methods=["POST", "OPTIONS"])
 def analyze():
+    """
+    Accepts ONE pair of images (1 baseline + 1 current) per call.
+    The frontend calls this twice — once for Angle 1, once for Angle 2.
+    
+    Expected JSON body:
+      { "baseline_b64": "...", "current_b64": "...", "view_label": "angle_1" }
+    """
     try:
+        logger.info("===== /analyze endpoint called, method=%s =====", request.method)
         if request.method == "OPTIONS":
             return ("", 204)
 
-        analyzers_available = (call_gemini_ensemble is not None) or (cv2 is not None and np is not None)
-        if not analyzers_available:
+        if call_gemini_ensemble is None:
+            logger.error("/analyze: Gemini module not available!")
             return jsonify({
-                "error": "No analyzers available: Gemini is unavailable and OpenCV/Numpy are unavailable.",
-                "differences": [],
-                "aggregate_tis": 100,
+                "error": "Gemini module not available.",
+                "differences": [], "aggregate_tis": 100,
                 "overall_assessment": "UNKNOWN",
             }), 500
 
         gemini_ready = _configure_genai()
+        if not gemini_ready:
+            return jsonify({
+                "error": "Gemini API key missing or configuration failed.",
+                "differences": [], "aggregate_tis": 100,
+                "overall_assessment": "UNKNOWN",
+            }), 500
 
         data = request.get_json(silent=True) or {}
 
-        baseline_angle1 = data.get("baseline_angle1") or data.get("baseline_1")
-        baseline_angle2 = data.get("baseline_angle2") or data.get("baseline_2")
-        current_angle1 = data.get("current_angle1") or data.get("current_1")
-        current_angle2 = data.get("current_angle2") or data.get("current_2")
+        # Accept a single pair of images
+        baseline_src = (
+            data.get("baseline_b64")
+            or data.get("baseline_url")
+            or data.get("baseline")
+            or data.get("baseline_angle1")
+            or data.get("baseline_1")
+        )
+        current_src = (
+            data.get("current_b64")
+            or data.get("current_url")
+            or data.get("current")
+            or data.get("current_angle1")
+            or data.get("current_1")
+        )
+        view_label = data.get("view_label", "single")
 
-        if baseline_angle1 or baseline_angle2 or current_angle1 or current_angle2:
-            baseline_sources = [s for s in [baseline_angle1, baseline_angle2] if s]
-            current_sources = [s for s in [current_angle1, current_angle2] if s]
-        else:
-            baseline_src = data.get("baseline_url") or data.get("baseline_b64") or data.get("baseline")
-            current_src = data.get("current_url") or data.get("current_b64") or data.get("current")
-            baseline_sources = _split_packed(baseline_src)
-            current_sources = _split_packed(current_src)
-
-        if len(baseline_sources) == 0 or len(current_sources) == 0:
+        if not baseline_src or not current_src:
             return jsonify({
-                "error": "Missing baseline/current image inputs",
-                "differences": [],
-                "aggregate_tis": 100,
+                "error": "Missing baseline or current image",
+                "differences": [], "aggregate_tis": 100,
                 "overall_assessment": "UNKNOWN",
             }), 400
 
-        # Backwards compatible: single baseline + single current
-        if len(baseline_sources) == 1 and len(current_sources) == 1:
-            result = _analyze_pair(str(baseline_sources[0]), str(current_sources[0]), view_label="single")
-            response = {
-                "differences": result["differences"],
-                "baseline_image_info": result["baseline_image_info"],
-                "current_image_info": result["current_image_info"],
-                "aggregate_tis": result["aggregate_tis"],
-                "overall_assessment": result["overall_assessment"],
-                "confidence_overall": result["confidence_overall"],
-                "notes": result["notes"],
-                "analysis_metadata": {
-                    **result["analysis_metadata"],
-                    "gemini_ready": bool(gemini_ready),
-                    "cv_ready": bool(cv2 is not None and np is not None),
-                },
-            }
-            return jsonify(response)
-
-        # Two-angle mode: require exactly 2 baseline and 2 current
-        if not (len(baseline_sources) == 2 and len(current_sources) == 2):
-            return jsonify({
-                "error": "Two-angle analysis requires exactly 2 baseline and 2 current images",
-                "differences": [],
-                "aggregate_tis": 100,
-                "overall_assessment": "UNKNOWN",
-            }), 400
-
-        r1 = _analyze_pair(str(baseline_sources[0]), str(current_sources[0]), view_label="angle_1")
-        r2 = _analyze_pair(str(baseline_sources[1]), str(current_sources[1]), view_label="angle_2")
-
-        # Prefix IDs so merged list doesn't collide
-        diffs: List[Dict[str, Any]] = []
-        for d in r1["differences"]:
-            d2 = dict(d)
-            d2["id"] = f"a1-{d2.get('id', 'diff')}"
-            diffs.append(d2)
-        for d in r2["differences"]:
-            d2 = dict(d)
-            d2["id"] = f"a2-{d2.get('id', 'diff')}"
-            diffs.append(d2)
-
-        tis1 = int(r1["aggregate_tis"])
-        tis2 = int(r2["aggregate_tis"])
-        tis_avg = int(round((tis1 + tis2) / 2.0))
-        conf_avg = float(r1.get("confidence_overall", 0.0) + r2.get("confidence_overall", 0.0)) / 2.0
-
-        # Security posture: keep aggregate score as average, but assessment/notes based on the worst view
-        tis_worst = min(tis1, tis2)
-        assessment, notes = _assess_from_tis(tis_worst)
+        result = _analyze_pair(str(baseline_src), str(current_src), view_label=str(view_label))
 
         response = {
-            "differences": diffs,
-            "baseline_image_info": {"angles": [r1["baseline_image_info"], r2["baseline_image_info"]]},
-            "current_image_info": {"angles": [r1["current_image_info"], r2["current_image_info"]]},
-            "aggregate_tis": tis_avg,
-            "overall_assessment": assessment,
-            "confidence_overall": conf_avg,
-            "notes": notes,
-            "angle_results": [
-                {
-                    "view": "angle_1",
-                    "aggregate_tis": r1["aggregate_tis"],
-                    "overall_assessment": r1["overall_assessment"],
-                    "confidence_overall": r1["confidence_overall"],
-                    "notes": r1["notes"],
-                    "differences": r1["differences"],
-                    "analysis_metadata": r1["analysis_metadata"],
-                },
-                {
-                    "view": "angle_2",
-                    "aggregate_tis": r2["aggregate_tis"],
-                    "overall_assessment": r2["overall_assessment"],
-                    "confidence_overall": r2["confidence_overall"],
-                    "notes": r2["notes"],
-                    "differences": r2["differences"],
-                    "analysis_metadata": r2["analysis_metadata"],
-                },
-            ],
+            "differences": result["differences"],
+            "aggregate_tis": result["aggregate_tis"],
+            "overall_assessment": result["overall_assessment"],
+            "confidence_overall": result["confidence_overall"],
+            "notes": result["notes"],
+            "can_upload": result["can_upload"],
             "analysis_metadata": {
-                "total_differences": len(diffs),
-                "high_severity_count": len([d for d in diffs if str(d.get("severity", "")).upper() == "HIGH"]),
-                "medium_severity_count": len([d for d in diffs if str(d.get("severity", "")).upper() == "MEDIUM"]),
-                "low_severity_count": len([d for d in diffs if str(d.get("severity", "")).upper() == "LOW"]),
-                "analysis_timestamp": str(datetime.now().isoformat()) if 'datetime' in globals() else "unknown",
-                "angle_1_tis": tis1,
-                "angle_2_tis": tis2,
-                "angle_tis_min": tis_worst,
-                "angle_tis_max": max(tis1, tis2),
-                "scoring_version": SCORING_VERSION,
-                "gemini_ready": bool(gemini_ready),
-                "cv_ready": bool(cv2 is not None and np is not None),
+                **result["analysis_metadata"],
+                "gemini_ready": True,
+                "cv_available": bool(cv2 is not None),
             },
         }
-
         return jsonify(response)
+
     except ValueError as ve:
         return jsonify({
             "error": str(ve),
-            "differences": [],
-            "aggregate_tis": 100,
+            "differences": [], "aggregate_tis": 100,
             "overall_assessment": "UNKNOWN",
         }), 400
     except Exception as e:
         tb = traceback.format_exc()
         print("Exception in /analyze:", tb, file=sys.stderr)
-        # return error info (status 500) so client sees problem
         return jsonify({
             "error": "Analyzer internal error",
             "details": str(e),
             "traceback": tb,
-            "differences": [],
-            "aggregate_tis": 100,
-            "overall_assessment": "UNKNOWN"
+            "differences": [], "aggregate_tis": 100,
+            "overall_assessment": "UNKNOWN",
         }), 500
