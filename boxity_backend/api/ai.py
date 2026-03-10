@@ -137,16 +137,19 @@ def call_gemini_ensemble(
     system = (
         "You are an expert multimodal forensic analyst specializing in package integrity and tampering detection.\n"
         "\nMISSION: Compare baseline vs current package photos to detect security breaches and integrity violations.\n"
+        "\nCRITICAL FOCUS:\n"
+        "- STRICTLY ignore the background of the image. ONLY focus on the box itself.\n"
+        "- STRICTLY ignore differences in camera angle, lighting, or perspective.\n"
+        "- STRICTLY ignore small, minor changes (e.g., tiny specks, minor scratches, slight color variations).\n"
+        "- STRICTLY ignore any tapes, tape peeling, or tape misalignments on the box.\n"
+        "- ONLY flag MAJOR structural changes such as edge distortion, corner distortion, dents, or severe damage.\n"
         "\nDETECTION TARGETS:\n"
-        "- seal_tamper: Broken, lifted, or altered seals (CRITICAL SECURITY RISK)\n"
         "- repackaging: Different packaging, missing elements, or structural changes\n"
         "- label_mismatch: Altered, replaced, or counterfeit labels\n"
         "- digital_edit: Photo manipulation, cloning, or artificial modifications\n"
         "- dent: Physical damage from impact or compression\n"
-        "- scratch: Surface abrasions or cuts\n"
-        "- stain: Discoloration or contamination\n"
-        "- color_shift: Significant color changes indicating tampering\n"
-        "- missing_item: Absent components or contents\n"
+        "- edge_distortion: Significant crushing, bending, or damage to the edges\n"
+        "- corner_distortion: Significant crushing or damage to the corners\n"
         "\nREGION SPECIFICATION:\n"
         "Be VERY specific about damage locations:\n"
         "- 'left side': Left edge/panel of the package\n"
@@ -159,11 +162,11 @@ def call_gemini_ensemble(
         "- 'center': Middle area of package\n"
         "\nANALYSIS RULES:\n"
         "1. Return STRICT JSON: {\"differences\":[...]} with NO additional text\n"
-        "2. Focus on security-critical issues first (seal_tamper, repackaging, digital_edit)\n"
+        "2. Focus ONLY on major issues: edge_distortion, corner_distortion, and dent.\n"
         "3. Provide precise bbox coordinates [x,y,w,h] in 0..1 range\n"
-        "4. Use HIGH severity for security breaches, MEDIUM for damage, LOW for minor issues\n"
+        "4. Use HIGH severity for security breaches, MEDIUM for major damage.\n"
         "5. Confidence must reflect certainty: >0.8 for clear evidence, <0.6 for uncertain\n"
-        "6. TIS delta: seal_tamper(-40), repackaging(-35), digital_edit(-50), labeling(-40), physical(-15)\n"
+        "6. TIS delta: repackaging(-33.4), edge_distortion(-23.3), corner_distortion(-20.5), dent(-17), digital_edit(-22), labeling(-33)\n"
         "7. ALWAYS specify exact region - never use generic terms\n"
         + view_context
         + "\n" + FEW_SHOT
@@ -171,8 +174,8 @@ def call_gemini_ensemble(
 
     parts = [
         system,
-        "\nCRITICAL: Focus on security threats. A single seal_tamper or digital_edit should trigger immediate quarantine.\n"
-        "Be conservative with confidence scores.\n"
+        "\nCRITICAL: Focus ONLY on the box and major security threats or structural damage. Ignore background, camera angle, minor changes, and ALL loose/missing tapes.\n"
+        "An edge distortion, corner distortion, or dent should trigger an alert.\n"
         "\nBaseline Image (Reference):", {"mime_type": baseline_mime or "image/jpeg", "data": baseline_bytes},
         "\nCurrent Image (Under Analysis):", {"mime_type": current_mime or "image/jpeg", "data": current_bytes},
     ]

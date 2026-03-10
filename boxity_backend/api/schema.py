@@ -17,7 +17,7 @@ DIFFERENCE_ITEM_SCHEMA: Dict[str, Any] = {
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "explainability": {"type": "array", "items": {"type": "string"}},
         "suggested_action": {"type": "string"},
-        "tis_delta": {"type": "integer"},
+        "tis_delta": {"type": "number"},
     },
     "required": ["id", "region", "type", "description", "severity", "confidence", "explainability", "suggested_action", "tis_delta"],
     "additionalProperties": True,

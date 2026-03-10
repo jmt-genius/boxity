@@ -10,15 +10,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from flask import Flask, request, jsonify
 
-# Auth
-try:
-    from .auth import optional_auth, require_auth
-    AUTH_AVAILABLE = True
-except Exception as e:
-    AUTH_AVAILABLE = False
-    optional_auth = lambda f: f
-    require_auth = lambda f: f
-    print("Auth module import failed:", e, file=sys.stderr)
+# Auth (Removed)
+AUTH_AVAILABLE = False
+optional_auth = lambda f: f
+require_auth = lambda f: f
 
 # CORS
 try:

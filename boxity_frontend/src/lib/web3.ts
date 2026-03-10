@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import CoinbaseWalletSDK from '@coinbase/wallet-sdk';
 import { CONTRACT_ADDRESS, CONTRACT_ABI, NETWORKS, SUPPORTED_NETWORKS } from './contracts';
 
 // Types
@@ -39,22 +40,28 @@ export class Web3Service {
   private provider: ethers.BrowserProvider | null = null;
   private signer: ethers.JsonRpcSigner | null = null;
   private contract: ethers.Contract | null = null;
+  private coinbaseProvider: any = null;
+
+  constructor() {
+    const coinbaseWallet = new CoinbaseWalletSDK({
+      appName: 'Boxity',
+      appLogoUrl: window.location.origin + '/favicon.ico',
+    });
+
+    this.coinbaseProvider = coinbaseWallet.makeWeb3Provider();
+  }
 
   async connectWallet(): Promise<string> {
     try {
-      if (!window.ethereum) {
-        throw new Error('MetaMask or compatible wallet not found');
-      }
+      // Request account access through Coinbase Wallet
+      await this.coinbaseProvider.request({ method: 'eth_requestAccounts' });
 
-      // Request account access
-      await window.ethereum.request({ method: 'eth_requestAccounts' });
-      
       // Create provider
-      this.provider = new ethers.BrowserProvider(window.ethereum);
-      
+      this.provider = new ethers.BrowserProvider(this.coinbaseProvider);
+
       // Get signer
       this.signer = await this.provider.getSigner();
-      
+
       // Ensure contract address is a valid checksummed address (prevents ENS resolution)
       let contractAddress: string;
       try {
@@ -63,16 +70,16 @@ export class Web3Service {
         // If getAddress fails, use the address as-is (shouldn't happen with valid address)
         contractAddress = CONTRACT_ADDRESS;
       }
-      
+
       // Initialize contract with explicit hex address (no ENS resolution)
       this.contract = new ethers.Contract(contractAddress, CONTRACT_ABI, this.signer);
-      
+
       // Get address directly without ENS resolution
       const address = await this.signer.getAddress();
-      
+
       // Check if we're on the correct network
       await this.checkNetwork();
-      
+
       return address;
     } catch (error) {
       console.error('Wallet connection error:', error);
@@ -84,38 +91,38 @@ export class Web3Service {
     if (!this.provider) return;
 
     const network = await this.provider.getNetwork();
-    const targetChainId = parseInt(NETWORKS.BASE_SEPOLIA.chainId, 16);
-    
+    const targetChainId = parseInt(NETWORKS.SEPOLIA.chainId, 16);
+
     if (network.chainId !== BigInt(targetChainId)) {
-      await this.switchToBaseSepolia();
+      await this.switchToSepolia();
     }
   }
 
-  async switchToBaseSepolia(): Promise<void> {
+  async switchToSepolia(): Promise<void> {
     try {
-      await window.ethereum.request({
+      await this.coinbaseProvider.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: NETWORKS.BASE_SEPOLIA.chainId }],
+        params: [{ chainId: NETWORKS.SEPOLIA.chainId }],
       });
     } catch (switchError: any) {
       // This error code indicates that the chain has not been added to MetaMask
       if (switchError.code === 4902) {
-        await this.addBaseSepoliaNetwork();
+        await this.addSepoliaNetwork();
       } else {
         throw switchError;
       }
     }
   }
 
-  private async addBaseSepoliaNetwork(): Promise<void> {
-    await window.ethereum.request({
+  private async addSepoliaNetwork(): Promise<void> {
+    await this.coinbaseProvider.request({
       method: 'wallet_addEthereumChain',
       params: [
         {
-          chainId: NETWORKS.BASE_SEPOLIA.chainId,
-          chainName: NETWORKS.BASE_SEPOLIA.chainName,
-          rpcUrls: NETWORKS.BASE_SEPOLIA.rpcUrls,
-          blockExplorerUrls: NETWORKS.BASE_SEPOLIA.blockExplorerUrls,
+          chainId: NETWORKS.SEPOLIA.chainId,
+          chainName: NETWORKS.SEPOLIA.chainName,
+          rpcUrls: NETWORKS.SEPOLIA.rpcUrls,
+          blockExplorerUrls: NETWORKS.SEPOLIA.blockExplorerUrls,
           nativeCurrency: {
             name: 'ETH',
             symbol: 'ETH',
@@ -134,8 +141,8 @@ export class Web3Service {
   async isUserAuthorized(address: string): Promise<boolean> {
     if (!this.contract) throw new Error('Contract not initialized');
     // Ensure address is a valid hex address (not ENS) to prevent resolution errors
-    const normalizedAddress = ethers.isAddress(address) 
-      ? ethers.getAddress(address) 
+    const normalizedAddress = ethers.isAddress(address)
+      ? ethers.getAddress(address)
       : address;
     return await this.contract.isUserAuthorized(normalizedAddress);
   }
@@ -150,7 +157,7 @@ export class Web3Service {
     secondViewBaseline: string
   ): Promise<ethers.ContractTransactionResponse> {
     if (!this.contract) throw new Error('Contract not initialized');
-    
+
     return await this.contract.createBatch(
       batchId,
       productName,
@@ -163,9 +170,9 @@ export class Web3Service {
 
   async getBatch(batchId: string): Promise<Batch> {
     if (!this.contract) throw new Error('Contract not initialized');
-    
+
     const batch = await this.contract.getBatch(batchId);
-    
+
     return {
       id: batch.id,
       productName: batch.productName,
@@ -186,9 +193,9 @@ export class Web3Service {
 
   async getBatchEvents(batchId: string): Promise<BatchEvent[]> {
     if (!this.contract) throw new Error('Contract not initialized');
-    
+
     const events = await this.contract.getBatchEvents(batchId);
-    
+
     return events.map((event: any) => ({
       id: Number(event.id),
       actor: event.actor,
@@ -204,9 +211,9 @@ export class Web3Service {
 
   async getContractInfo(): Promise<ContractInfo> {
     if (!this.contract) throw new Error('Contract not initialized');
-    
+
     const info = await this.contract.getContractInfo();
-    
+
     return {
       name: info.name,
       version: info.version,
@@ -226,7 +233,7 @@ export class Web3Service {
     eventHash: string
   ): Promise<ethers.ContractTransactionResponse> {
     if (!this.contract) throw new Error('Contract not initialized');
-    
+
     return await this.contract.logEvent(
       batchId,
       actor,

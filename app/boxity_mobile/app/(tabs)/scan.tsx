@@ -50,8 +50,8 @@ export default function ScanScreen() {
     try {
       console.log('QR Code scanned:', data);
       const batch = await apiService.scanInit(data);
-      setBatch(batch);
-      
+      setBatch(batch as any);
+
       await new Promise(resolve => setTimeout(resolve, 500));
       router.push('/(tabs)/capture');
     } catch (error) {
@@ -113,7 +113,7 @@ export default function ScanScreen() {
               <View style={[styles.corner, styles.cornerTopRight]} />
               <View style={[styles.corner, styles.cornerBottomLeft]} />
               <View style={[styles.corner, styles.cornerBottomRight]} />
-              
+
               <Animated.View
                 style={[
                   styles.scanLine,

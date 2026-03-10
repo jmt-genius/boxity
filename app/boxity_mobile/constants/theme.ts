@@ -37,3 +37,8 @@ export const theme = {
     xxl: 32,
   },
 } as const;
+
+export const Colors = {
+  light: theme.colors,
+  dark: theme.colors,
+};
