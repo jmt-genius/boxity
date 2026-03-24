@@ -24,6 +24,7 @@ import {
 import { Search, Package, Loader2, Shield, Database } from "lucide-react";
 import { QRScanAnimator } from "@/components/QRScanAnimator";
 import { AnimatedTimeline } from "@/components/AnimatedTimeline";
+import { AgentInsightBadge, parseAgentInsights } from "@/components/AgentInsightBadge";
 import { GlassCard } from "@/components/GlassCard";
 import ClickSpark from "@/components/ClickSpark";
 import QRScanner from "@/components/QRScanner";
@@ -126,8 +127,16 @@ const ContractBatchTimeline = ({ batchId }: { batchId: string }) => {
                 Blockchain
               </Badge>
             </div>
-            <p className="text-sm text-muted-foreground">{event.note}</p>
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            {(() => {
+              const { cleanNote, insights } = parseAgentInsights(event.note);
+              return (
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">{cleanNote}</p>
+                  <AgentInsightBadge insights={insights} />
+                </div>
+              );
+            })()}
+            <div className="flex items-center gap-4 text-xs text-muted-foreground mt-2">
               <span>{new Date(event.timestamp * 1000).toLocaleString()}</span>
               <span className="font-mono">Hash: {event.eventHash.slice(0, 8)}...</span>
             </div>

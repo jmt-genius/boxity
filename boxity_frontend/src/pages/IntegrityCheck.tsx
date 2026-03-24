@@ -6,6 +6,9 @@ import { Upload, AlertTriangle, CheckCircle } from "lucide-react";
 import { Box3D } from "@/components/Box3D";
 import { useToast } from "@/hooks/use-toast";
 import ClickSpark from "@/components/ClickSpark";
+import { AgentActivityLog } from "@/components/AgentActivityLog";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 
 interface DifferenceResult {
   location: string;
@@ -79,6 +82,9 @@ export default function IntegrityCheck() {
   const [isDemoMode, setIsDemoMode] = useState(false);
   const { toast } = useToast();
 
+  const [agentAuditLog, setAgentAuditLog] = useState<any[] | null>(null);
+  const [showAgentPanel, setShowAgentPanel] = useState(false);
+
   const handleImageUpload = (
     e: ChangeEvent<HTMLInputElement>,
     type: "before" | "after"
@@ -144,6 +150,7 @@ export default function IntegrityCheck() {
     // Reset previous analysis results when loading demo mode
     setDifferences(null);
     setTrustScore(null);
+    setAgentAuditLog(null);
 
     toast({
       title: "Demo mode loaded",
@@ -277,6 +284,8 @@ export default function IntegrityCheck() {
 
         setDifferences(mapped);
         setTrustScore(trustScoreData);
+        setAgentAuditLog(data.agent_audit_log || null);
+
         // Enhanced toast with risk assessment
         const riskLevel = String(trustScoreData.overall_assessment || "").toUpperCase().includes("SAFE")
           ? "SAFE"
@@ -700,6 +709,33 @@ export default function IntegrityCheck() {
               )}
             </Button>
           </motion.div>
+
+          {/* Agent Debug Panel Toggle */}
+          {agentAuditLog && agentAuditLog.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-6 flex flex-col items-center gap-4"
+            >
+              <div className="flex items-center space-x-2 bg-secondary/20 border border-border/50 rounded-full px-4 py-2">
+                <Switch 
+                  id="agent-panel" 
+                  checked={showAgentPanel}
+                  onCheckedChange={setShowAgentPanel}
+                />
+                <Label htmlFor="agent-panel" className="text-sm font-medium cursor-pointer flex items-center gap-2 text-muted-foreground">
+                  <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                  Show Agent Debug Panel
+                </Label>
+              </div>
+
+              {showAgentPanel && (
+                <div className="w-full text-left">
+                  <AgentActivityLog logs={agentAuditLog} isAnalyzing={isAnalyzing} />
+                </div>
+              )}
+            </motion.div>
+          )}
 
           {/* Trust Score Display */}
           {trustScore && (

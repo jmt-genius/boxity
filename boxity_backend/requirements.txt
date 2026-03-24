@@ -20,3 +20,6 @@ scikit-learn
 python-dotenv==1.0.1
 PyJWT==2.8.0
 cryptography==42.0.0
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-google-genai>=1.0.0

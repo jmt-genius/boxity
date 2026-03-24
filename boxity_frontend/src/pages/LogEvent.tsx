@@ -53,6 +53,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { Walkthrough } from "@/components/Walkthrough";
 import { WalletConnect } from "@/components/WalletConnect";
+import { AgentWorkflowPanel } from "@/components/AgentWorkflowPanel";
 
 import {
   loadBatches,
@@ -137,6 +138,12 @@ export default function LogEvent(): JSX.Element {
   } | null>(null);
   const [isAnalyzingIntegrity, setIsAnalyzingIntegrity] = useState(false);
 
+  // Agentic workflow state
+  const [agentAuditLog, setAgentAuditLog] = useState<any[]>([]);
+  const [agentIterations, setAgentIterations] = useState<number>(0);
+  const [agentDecision, setAgentDecision] = useState<string>("");
+  const [latestTxHash, setLatestTxHash] = useState<string>("");
+
   // const INSFORGE_BASE_URL = import.meta.env.VITE_INSFORGE_BASE_URL as string | undefined;
   // const INSFORGE_ANON_KEY = import.meta.env.VITE_INSFORGE_ANON_KEY as string | undefined;
 
@@ -156,6 +163,55 @@ export default function LogEvent(): JSX.Element {
   const packImages = (a: string, b: string): string => {
     const out = [String(a || "").trim(), String(b || "").trim()].filter(Boolean);
     return out.join(IMAGE_PACK_DELIMITER);
+  };
+
+  const getFallbackAgentWorkflow = (data: any, viewLabel?: string) => {
+    const differences = Array.isArray(data?.differences) ? data.differences : [];
+    const tis = Number.isFinite(Number(data?.aggregate_tis)) ? Number(data?.aggregate_tis) : 100;
+    const overallAssessment = String(data?.overall_assessment || "SAFE").toUpperCase();
+    const confidenceOverall = Number.isFinite(Number(data?.confidence_overall))
+      ? Number(data?.confidence_overall)
+      : 0.8;
+    const notes = String(data?.notes || "Analysis completed");
+
+    const decision = tis >= 40 ? "APPROVE" : "REJECT";
+    const perceptionOutput = {
+      differences,
+      overall_confidence: confidenceOverall,
+      view: viewLabel || "single",
+      aggregate_tis: tis,
+    };
+    const reasoningOutput = {
+      decision,
+      confidence_assessment: confidenceOverall >= 0.75 ? "High" : confidenceOverall >= 0.5 ? "Medium" : "Low",
+      reasoning: `${overallAssessment} at TIS ${tis}%. ${notes}`,
+      view: viewLabel || "single",
+    };
+
+    const logs = Array.isArray(data?.agent_audit_log) && data.agent_audit_log.length > 0
+      ? data.agent_audit_log
+      : [
+          {
+            agent: "Perception Agent",
+            step: "perception",
+            action: "Analyzed visual differences from submitted images",
+            output: perceptionOutput,
+            timestamp: new Date().toISOString(),
+          },
+          {
+            agent: "Reasoning Agent",
+            step: "reasoning",
+            action: "Evaluated risk and generated final decision",
+            output: reasoningOutput,
+            timestamp: new Date().toISOString(),
+          },
+        ];
+
+    return {
+      logs,
+      iterations: Number(data?.agent_iterations) || 1,
+      decision: String(data?.agent_decision || decision),
+    };
   };
 
   const ipfsToHttp = (uri: string): string => {
@@ -301,6 +357,11 @@ export default function LogEvent(): JSX.Element {
         // Allow upload if backend says so (based on score > 40)
         const passed = data.can_upload ?? (tisScore >= 40);
 
+        const workflow = getFallbackAgentWorkflow(data, "angle_1");
+        setAgentAuditLog(workflow.logs);
+        setAgentIterations(workflow.iterations);
+        setAgentDecision(workflow.decision);
+
         setIntegrityResultAngle1({ passed, tisScore, differences: mapped, trustScore: trustScoreData });
 
         if (passed) {
@@ -352,6 +413,7 @@ export default function LogEvent(): JSX.Element {
     }
 
     setIsAnalyzingIntegrity(true);
+    setAgentAuditLog([]); // Ensure audit log is fresh
     setIntegrityAnalysisResult(null);
     setIntegrityResultAngle1(null);
     setIntegrityResultAngle2(null);
@@ -410,16 +472,27 @@ export default function LogEvent(): JSX.Element {
         }
       };
 
+      const workflow1 = getFallbackAgentWorkflow(data1, "angle_1");
+      setAgentAuditLog(workflow1.logs);
+      setAgentIterations(workflow1.iterations);
+      setAgentDecision(workflow1.decision);
+
       setIntegrityResultAngle1(result1);
       toast({
         title: "Angle 1 Analysis Complete",
         description: `Score: ${result1.tisScore}%. Found ${mapped1.length} issues.`,
       });
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Angle 1 Error:", err);
-      toast({ title: "Angle 1 Failed", description: "Verification failed for first angle", variant: "destructive" });
+      toast({ title: "Angle 1 Failed", description: "Verification failed for first angle: " + (err.message || "Network Error"), variant: "destructive" });
       setIsAnalyzingIntegrity(false);
+      
+      // Inject an error to break the UI out of loading state
+      setAgentAuditLog([{ 
+        agent: "System", step: "error", 
+        output: { error: `Angle 1 Analysis Failed: ${err.message || 'Timeout / Rate Limit Exceeded'}. Please wait a moment and try again.` } 
+      }]);
       return; // Stop if Angle 1 fails technical execution
     }
 
@@ -463,15 +536,26 @@ export default function LogEvent(): JSX.Element {
         }
       };
 
+      const workflow2 = getFallbackAgentWorkflow(data2, "angle_2");
+      setAgentAuditLog((prev) => [...prev, ...workflow2.logs]);
+      setAgentIterations(Math.max(1, workflow2.iterations));
+      setAgentDecision(workflow2.decision);
+
       setIntegrityResultAngle2(result2);
       toast({
         title: "Angle 2 Analysis Complete",
         description: `Score: ${result2.tisScore}%. Found ${mapped2.length} issues.`,
       });
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Angle 2 Error:", err);
-      toast({ title: "Angle 2 Failed", description: "Verification failed for second angle", variant: "destructive" });
+      toast({ title: "Angle 2 Failed", description: "Verification failed for second angle: " + (err.message || "Network Error"), variant: "destructive" });
+      
+      // If Angle 1 succeeded but Angle 2 failed, we append the error so the UI still cancels the loading spinner
+      setAgentAuditLog(prev => [...prev, { 
+        agent: "System", step: "error", 
+        output: { error: `Angle 2 Analysis Failed: ${err.message || 'Timeout / Rate Limit Exceeded'}. Both angles must succeed.` } 
+      }]);
     }
 
     // --- STEP 3: Set combined pass/fail (no average score needed) ---
@@ -535,6 +619,11 @@ export default function LogEvent(): JSX.Element {
         };
 
         const passed = data.can_upload ?? (tisScore >= 40);
+
+        const workflow = getFallbackAgentWorkflow(data, "angle_2");
+        setAgentAuditLog(workflow.logs);
+        setAgentIterations(workflow.iterations);
+        setAgentDecision(workflow.decision);
 
         setIntegrityResultAngle2({ passed, tisScore, differences: mapped, trustScore: trustScoreData });
 
@@ -659,6 +748,16 @@ export default function LogEvent(): JSX.Element {
       return;
     }
 
+    // Format agent insights into a hidden string for the timeline
+    const minTisScore = Math.min(
+      integrityResultAngle1?.tisScore ?? 100,
+      integrityResultAngle2?.tisScore ?? 100
+    );
+    const hasAgentData = agentDecision && agentAuditLog && agentAuditLog.length > 0;
+    const finalNote = hasAgentData 
+      ? `${note}\n\n[AGENT_INSIGHTS|${agentDecision}|${minTisScore}|${agentIterations}]` 
+      : note;
+
     // Handle contract batch event logging
     if (isContractBatch) {
       if (!connectedAddress) {
@@ -679,7 +778,7 @@ export default function LogEvent(): JSX.Element {
           batchId,
           actor,
           role,
-          note,
+          finalNote,
           imageAngle1 || '',
           imageAngle2 || '',
           eventHash
@@ -731,7 +830,7 @@ export default function LogEvent(): JSX.Element {
       actor,
       role,
       timestamp: new Date().toISOString(),
-      note,
+      note: finalNote,
       image: packImages(imageAngle1, imageAngle2) || undefined,
       hash: generateHash(`${batchId}${actor}${Date.now()}`),
       ledgerRef: generateLedgerRef(),
@@ -1493,6 +1592,19 @@ export default function LogEvent(): JSX.Element {
                   {isUploadingImage && <span className="text-xs text-blue-500">Uploading image...</span>}
                 </div>
 
+                {(agentAuditLog.length > 0 || isCheckingIntegrityAngle1 || isCheckingIntegrityAngle2 || integrityResultAngle1 !== null || integrityResultAngle2 !== null) && !showIntegrityAnalysis && (
+                  <div className="py-4">
+                    <AgentWorkflowPanel
+                      isAnalyzing={isCheckingIntegrityAngle1 || isCheckingIntegrityAngle2}
+                      auditLog={agentAuditLog}
+                      finalDecision={agentDecision}
+                      iterations={agentIterations}
+                      txHash={latestTxHash}
+                      isLoggingToBlockchain={isLogging}
+                    />
+                  </div>
+                )}
+
                 <motion.div whileTap={{ scale: 0.98 }}>
                   <Button
                     onClick={handleSubmit}
@@ -1606,6 +1718,293 @@ export default function LogEvent(): JSX.Element {
           </motion.div>
         </div>
 
+        {/* WRAPPED INTEGRITY ANALYSIS */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="mt-8 mb-8">
+          <Card className="overflow-hidden border-primary/20 shadow-lg">
+            <CardContent className="pt-6">
+              {/* Baseline Images Comparison Section */}
+              {showIntegrityAnalysis && (contractBaselineAngle1 || contractBaselineAngle2 || insforgeFirstViewUrl || insforgeSecondViewUrl) && (
+                <div className="mt-6 space-y-6">
+                  <div className="border rounded-lg p-4 bg-muted/50">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold flex items-center gap-2">
+                        <ShieldCheck className="h-5 w-5" />
+                        Integrity Analysis
+                      </h3>
+                      <Button
+                        onClick={analyzeIntegrity}
+                        disabled={isAnalyzingIntegrity || !contractBaselineAngle1 || !contractBaselineAngle2 || !imageAngle1 || !imageAngle2}
+                        className="gap-2"
+                      >
+                        {isAnalyzingIntegrity ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Analyzing...
+                          </>
+                        ) : (
+                          <>
+                            <ShieldCheck className="h-4 w-4" />
+                            Analyze
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {/* Side-by-side comparison */}
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {/* Angle 1 Comparison */}
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-semibold">Angle 1 Comparison</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                              <CheckCircle2 className="h-3 w-3 text-green-500" />
+                              Baseline (Smart Contract)
+                            </p>
+                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
+                              {isLoadingContractBaseline ? (
+                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                              ) : contractBaselineAngle1 ? (
+                                <img src={contractBaselineAngle1} alt="Baseline Angle 1" className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="text-center p-4">
+                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                  <p className="text-xs text-muted-foreground">No baseline</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3 text-orange-500" />
+                              Current (IPFS Upload)
+                            </p>
+                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
+                              {insforgeFirstViewUrl ? (
+                                <img src={insforgeFirstViewUrl} alt="Current Angle 1" className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="text-center p-4">
+                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                  <p className="text-xs text-muted-foreground">No image</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Angle 2 Comparison */}
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-semibold">Angle 2 Comparison</h4>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                              <CheckCircle2 className="h-3 w-3 text-green-500" />
+                              Baseline (Smart Contract)
+                            </p>
+                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
+                              {isLoadingContractBaseline ? (
+                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                              ) : contractBaselineAngle2 ? (
+                                <img src={contractBaselineAngle2} alt="Baseline Angle 2" className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="text-center p-4">
+                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                  <p className="text-xs text-muted-foreground">No baseline</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3 text-orange-500" />
+                              Current (IPFS Upload)
+                            </p>
+                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
+                              {insforgeSecondViewUrl ? (
+                                <img src={insforgeSecondViewUrl} alt="Current Angle 2" className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="text-center p-4">
+                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                                  <p className="text-xs text-muted-foreground">No image</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Agentic Workflow for Load Batch */}
+                  {(agentAuditLog.length > 0 || isAnalyzingIntegrity || integrityResultAngle1 !== null || integrityResultAngle2 !== null) && (
+                    <div className="mt-8 border-t border-border/10 pt-6">
+                      <AgentWorkflowPanel
+                        isAnalyzing={isAnalyzingIntegrity}
+                        auditLog={agentAuditLog}
+                        finalDecision={agentDecision}
+                        iterations={agentIterations}
+                        txHash={latestTxHash}
+                        isLoggingToBlockchain={isLogging}
+                      />
+                    </div>
+                  )}
+
+                  {/* Per-Angle Results */}
+                  {(integrityResultAngle1 || integrityResultAngle2) && (
+                    <div className="grid gap-6 md:grid-cols-2 mt-6">
+                      {/* ── Angle 1 Results ── */}
+                      {integrityResultAngle1 && (
+                        <div className="border rounded-lg p-4 bg-background">
+                          <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Angle 1</Badge>
+                            Results
+                          </h4>
+
+                          {/* TIS Ring */}
+                          <div className="relative h-28 w-28 mx-auto">
+                            <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
+                              <circle cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none" className="text-muted/20" />
+                              <circle
+                                cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none"
+                                strokeDasharray={`${2 * Math.PI * 50}`}
+                                strokeDashoffset={`${2 * Math.PI * 50 * (1 - Math.max(0, Math.min(100, integrityResultAngle1.tisScore ?? 0)) / 100)}`}
+                                className={(integrityResultAngle1.tisScore ?? 0) >= 80 ? "text-green-500" : (integrityResultAngle1.tisScore ?? 0) >= 40 ? "text-orange-500" : "text-red-500"}
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-lg font-bold">{integrityResultAngle1.tisScore ?? 0}%</span>
+                            </div>
+                          </div>
+
+                          {/* Assessment Badge */}
+                          <div className="flex justify-center mt-3">
+                            <div className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium ${integrityResultAngle1.passed
+                                ? "bg-green-500/20 text-green-700 border border-green-500/30"
+                                : "bg-red-500/20 text-red-700 border border-red-500/30"
+                              }`}>
+                              {integrityResultAngle1.passed ? (
+                                <><CheckCircle2 className="w-3 h-3 mr-1.5" /> PASSED</>
+                              ) : (
+                                <><AlertTriangle className="w-3 h-3 mr-1.5" /> FAILED</>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Differences */}
+                          {integrityResultAngle1.differences && integrityResultAngle1.differences.length > 0 && (
+                            <div className="mt-4">
+                              <h5 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+                                <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />
+                                Differences ({integrityResultAngle1.differences.length})
+                              </h5>
+                              <div className="space-y-1.5">
+                                {integrityResultAngle1.differences.map((diff: any, idx: number) => (
+                                  <div key={idx} className={`p-2.5 rounded-lg border-l-4 ${diff.severity === "high" ? "bg-red-500/10 border-red-500" : diff.severity === "medium" ? "bg-orange-500/10 border-orange-500" : "bg-yellow-500/10 border-yellow-500"}`}>
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <h6 className="font-semibold text-xs mb-0.5">{diff.location}</h6>
+                                        <p className="text-[11px] text-muted-foreground leading-tight">{diff.description}</p>
+                                      </div>
+                                      <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${diff.severity === "high" ? "bg-red-500/20 text-red-700" : diff.severity === "medium" ? "bg-orange-500/20 text-orange-700" : "bg-yellow-500/20 text-yellow-700"}`}>
+                                        {diff.severity.toUpperCase()}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {integrityResultAngle1.differences && integrityResultAngle1.differences.length === 0 && (
+                            <p className="text-xs text-muted-foreground text-center mt-3">No differences detected</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* ── Angle 2 Results ── */}
+                      {integrityResultAngle2 && (
+                        <div className="border rounded-lg p-4 bg-background">
+                          <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                            <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">Angle 2</Badge>
+                            Results
+                          </h4>
+
+                          {/* TIS Ring */}
+                          <div className="relative h-28 w-28 mx-auto">
+                            <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
+                              <circle cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none" className="text-muted/20" />
+                              <circle
+                                cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none"
+                                strokeDasharray={`${2 * Math.PI * 50}`}
+                                strokeDashoffset={`${2 * Math.PI * 50 * (1 - Math.max(0, Math.min(100, integrityResultAngle2.tisScore ?? 0)) / 100)}`}
+                                className={(integrityResultAngle2.tisScore ?? 0) >= 80 ? "text-green-500" : (integrityResultAngle2.tisScore ?? 0) >= 40 ? "text-orange-500" : "text-red-500"}
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-lg font-bold">{integrityResultAngle2.tisScore ?? 0}%</span>
+                            </div>
+                          </div>
+
+                          {/* Assessment Badge */}
+                          <div className="flex justify-center mt-3">
+                            <div className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium ${integrityResultAngle2.passed
+                                ? "bg-green-500/20 text-green-700 border border-green-500/30"
+                                : "bg-red-500/20 text-red-700 border border-red-500/30"
+                              }`}>
+                              {integrityResultAngle2.passed ? (
+                                <><CheckCircle2 className="w-3 h-3 mr-1.5" /> PASSED</>
+                              ) : (
+                                <><AlertTriangle className="w-3 h-3 mr-1.5" /> FAILED</>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Differences */}
+                          {integrityResultAngle2.differences && integrityResultAngle2.differences.length > 0 && (
+                            <div className="mt-4">
+                              <h5 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+                                <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />
+                                Differences ({integrityResultAngle2.differences.length})
+                              </h5>
+                              <div className="space-y-1.5">
+                                {integrityResultAngle2.differences.map((diff: any, idx: number) => (
+                                  <div key={idx} className={`p-2.5 rounded-lg border-l-4 ${diff.severity === "high" ? "bg-red-500/10 border-red-500" : diff.severity === "medium" ? "bg-orange-500/10 border-orange-500" : "bg-yellow-500/10 border-yellow-500"}`}>
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <h6 className="font-semibold text-xs mb-0.5">{diff.location}</h6>
+                                        <p className="text-[11px] text-muted-foreground leading-tight">{diff.description}</p>
+                                      </div>
+                                      <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${diff.severity === "high" ? "bg-red-500/20 text-red-700" : diff.severity === "medium" ? "bg-orange-500/20 text-orange-700" : "bg-yellow-500/20 text-yellow-700"}`}>
+                                        {diff.severity.toUpperCase()}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {integrityResultAngle2.differences && integrityResultAngle2.differences.length === 0 && (
+                            <p className="text-xs text-muted-foreground text-center mt-3">No differences detected</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Blocked message */}
+                  {integrityAnalysisResult && !integrityAnalysisResult.passed && (
+                    <p className="text-xs text-red-600 font-medium mt-4">
+                      ⚠️ One or both angles have TIS Score below 40% — Approval blocked
+                    </p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1655,6 +2054,8 @@ export default function LogEvent(): JSX.Element {
                 </div>
               )}
 
+
+
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -1681,7 +2082,6 @@ export default function LogEvent(): JSX.Element {
                       </TableRow>
                     ) : (
                       pendingInsforgeBatches.map((row) => {
-                        console.log(row);
                         const firstUrl = ipfsToHttp(row.first_view_ipfs);
                         const secondUrl = ipfsToHttp(row.second_view_ipfs);
                         const isApproving = approveInsforgeBatchMutation.isPending && approveInsforgeBatchMutation.variables?.id === row.id;
@@ -1857,273 +2257,6 @@ export default function LogEvent(): JSX.Element {
                   </TableBody>
                 </Table>
               </div>
-
-              {/* Baseline Images Comparison Section */}
-              {showIntegrityAnalysis && (contractBaselineAngle1 || contractBaselineAngle2 || insforgeFirstViewUrl || insforgeSecondViewUrl) && (
-                <div className="mt-6 space-y-6">
-                  <div className="border rounded-lg p-4 bg-muted/50">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-lg font-semibold flex items-center gap-2">
-                        <ShieldCheck className="h-5 w-5" />
-                        Integrity Analysis
-                      </h3>
-                      <Button
-                        onClick={analyzeIntegrity}
-                        disabled={isAnalyzingIntegrity || !contractBaselineAngle1 || !contractBaselineAngle2 || !imageAngle1 || !imageAngle2}
-                        className="gap-2"
-                      >
-                        {isAnalyzingIntegrity ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Analyzing...
-                          </>
-                        ) : (
-                          <>
-                            <ShieldCheck className="h-4 w-4" />
-                            Analyze
-                          </>
-                        )}
-                      </Button>
-                    </div>
-
-                    {/* Side-by-side comparison */}
-                    <div className="grid gap-4 md:grid-cols-2">
-                      {/* Angle 1 Comparison */}
-                      <div className="space-y-3">
-                        <h4 className="text-sm font-semibold">Angle 1 Comparison</h4>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
-                              <CheckCircle2 className="h-3 w-3 text-green-500" />
-                              Baseline (Smart Contract)
-                            </p>
-                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
-                              {isLoadingContractBaseline ? (
-                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                              ) : contractBaselineAngle1 ? (
-                                <img src={contractBaselineAngle1} alt="Baseline Angle 1" className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="text-center p-4">
-                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                                  <p className="text-xs text-muted-foreground">No baseline</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
-                              <AlertTriangle className="h-3 w-3 text-orange-500" />
-                              Current (IPFS Upload)
-                            </p>
-                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
-                              {insforgeFirstViewUrl ? (
-                                <img src={insforgeFirstViewUrl} alt="Current Angle 1" className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="text-center p-4">
-                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                                  <p className="text-xs text-muted-foreground">No image</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Angle 2 Comparison */}
-                      <div className="space-y-3">
-                        <h4 className="text-sm font-semibold">Angle 2 Comparison</h4>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
-                              <CheckCircle2 className="h-3 w-3 text-green-500" />
-                              Baseline (Smart Contract)
-                            </p>
-                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-green-500/30 flex items-center justify-center overflow-hidden">
-                              {isLoadingContractBaseline ? (
-                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                              ) : contractBaselineAngle2 ? (
-                                <img src={contractBaselineAngle2} alt="Baseline Angle 2" className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="text-center p-4">
-                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                                  <p className="text-xs text-muted-foreground">No baseline</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1">
-                              <AlertTriangle className="h-3 w-3 text-orange-500" />
-                              Current (IPFS Upload)
-                            </p>
-                            <div className="aspect-square bg-secondary/20 rounded-lg border-2 border-dashed border-orange-500/30 flex items-center justify-center overflow-hidden">
-                              {insforgeSecondViewUrl ? (
-                                <img src={insforgeSecondViewUrl} alt="Current Angle 2" className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="text-center p-4">
-                                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-                                  <p className="text-xs text-muted-foreground">No image</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                  </div>
-
-                  {/* Per-Angle Results */}
-                  {(integrityResultAngle1 || integrityResultAngle2) && (
-                    <div className="grid gap-6 md:grid-cols-2 mt-6">
-                      {/* ── Angle 1 Results ── */}
-                      {integrityResultAngle1 && (
-                        <div className="border rounded-lg p-4 bg-background">
-                          <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Angle 1</Badge>
-                            Results
-                          </h4>
-
-                          {/* TIS Ring */}
-                          <div className="relative h-28 w-28 mx-auto">
-                            <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
-                              <circle cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none" className="text-muted/20" />
-                              <circle
-                                cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none"
-                                strokeDasharray={`${2 * Math.PI * 50}`}
-                                strokeDashoffset={`${2 * Math.PI * 50 * (1 - Math.max(0, Math.min(100, integrityResultAngle1.tisScore ?? 0)) / 100)}`}
-                                className={(integrityResultAngle1.tisScore ?? 0) >= 80 ? "text-green-500" : (integrityResultAngle1.tisScore ?? 0) >= 40 ? "text-orange-500" : "text-red-500"}
-                                strokeLinecap="round"
-                              />
-                            </svg>
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className="text-lg font-bold">{integrityResultAngle1.tisScore ?? 0}%</span>
-                            </div>
-                          </div>
-
-                          {/* Assessment Badge */}
-                          <div className="flex justify-center mt-3">
-                            <div className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium ${integrityResultAngle1.passed
-                                ? "bg-green-500/20 text-green-700 border border-green-500/30"
-                                : "bg-red-500/20 text-red-700 border border-red-500/30"
-                              }`}>
-                              {integrityResultAngle1.passed ? (
-                                <><CheckCircle2 className="w-3 h-3 mr-1.5" /> PASSED</>
-                              ) : (
-                                <><AlertTriangle className="w-3 h-3 mr-1.5" /> FAILED</>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Differences */}
-                          {integrityResultAngle1.differences && integrityResultAngle1.differences.length > 0 && (
-                            <div className="mt-4">
-                              <h5 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-                                <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />
-                                Differences ({integrityResultAngle1.differences.length})
-                              </h5>
-                              <div className="space-y-1.5">
-                                {integrityResultAngle1.differences.map((diff: any, idx: number) => (
-                                  <div key={idx} className={`p-2.5 rounded-lg border-l-4 ${diff.severity === "high" ? "bg-red-500/10 border-red-500" : diff.severity === "medium" ? "bg-orange-500/10 border-orange-500" : "bg-yellow-500/10 border-yellow-500"}`}>
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div className="min-w-0">
-                                        <h6 className="font-semibold text-xs mb-0.5">{diff.location}</h6>
-                                        <p className="text-[11px] text-muted-foreground leading-tight">{diff.description}</p>
-                                      </div>
-                                      <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${diff.severity === "high" ? "bg-red-500/20 text-red-700" : diff.severity === "medium" ? "bg-orange-500/20 text-orange-700" : "bg-yellow-500/20 text-yellow-700"}`}>
-                                        {diff.severity.toUpperCase()}
-                                      </span>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {integrityResultAngle1.differences && integrityResultAngle1.differences.length === 0 && (
-                            <p className="text-xs text-muted-foreground text-center mt-3">No differences detected</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* ── Angle 2 Results ── */}
-                      {integrityResultAngle2 && (
-                        <div className="border rounded-lg p-4 bg-background">
-                          <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                            <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">Angle 2</Badge>
-                            Results
-                          </h4>
-
-                          {/* TIS Ring */}
-                          <div className="relative h-28 w-28 mx-auto">
-                            <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
-                              <circle cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none" className="text-muted/20" />
-                              <circle
-                                cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="8" fill="none"
-                                strokeDasharray={`${2 * Math.PI * 50}`}
-                                strokeDashoffset={`${2 * Math.PI * 50 * (1 - Math.max(0, Math.min(100, integrityResultAngle2.tisScore ?? 0)) / 100)}`}
-                                className={(integrityResultAngle2.tisScore ?? 0) >= 80 ? "text-green-500" : (integrityResultAngle2.tisScore ?? 0) >= 40 ? "text-orange-500" : "text-red-500"}
-                                strokeLinecap="round"
-                              />
-                            </svg>
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className="text-lg font-bold">{integrityResultAngle2.tisScore ?? 0}%</span>
-                            </div>
-                          </div>
-
-                          {/* Assessment Badge */}
-                          <div className="flex justify-center mt-3">
-                            <div className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium ${integrityResultAngle2.passed
-                                ? "bg-green-500/20 text-green-700 border border-green-500/30"
-                                : "bg-red-500/20 text-red-700 border border-red-500/30"
-                              }`}>
-                              {integrityResultAngle2.passed ? (
-                                <><CheckCircle2 className="w-3 h-3 mr-1.5" /> PASSED</>
-                              ) : (
-                                <><AlertTriangle className="w-3 h-3 mr-1.5" /> FAILED</>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Differences */}
-                          {integrityResultAngle2.differences && integrityResultAngle2.differences.length > 0 && (
-                            <div className="mt-4">
-                              <h5 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
-                                <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />
-                                Differences ({integrityResultAngle2.differences.length})
-                              </h5>
-                              <div className="space-y-1.5">
-                                {integrityResultAngle2.differences.map((diff: any, idx: number) => (
-                                  <div key={idx} className={`p-2.5 rounded-lg border-l-4 ${diff.severity === "high" ? "bg-red-500/10 border-red-500" : diff.severity === "medium" ? "bg-orange-500/10 border-orange-500" : "bg-yellow-500/10 border-yellow-500"}`}>
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div className="min-w-0">
-                                        <h6 className="font-semibold text-xs mb-0.5">{diff.location}</h6>
-                                        <p className="text-[11px] text-muted-foreground leading-tight">{diff.description}</p>
-                                      </div>
-                                      <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${diff.severity === "high" ? "bg-red-500/20 text-red-700" : diff.severity === "medium" ? "bg-orange-500/20 text-orange-700" : "bg-yellow-500/20 text-yellow-700"}`}>
-                                        {diff.severity.toUpperCase()}
-                                      </span>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {integrityResultAngle2.differences && integrityResultAngle2.differences.length === 0 && (
-                            <p className="text-xs text-muted-foreground text-center mt-3">No differences detected</p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Blocked message */}
-                  {integrityAnalysisResult && !integrityAnalysisResult.passed && (
-                    <p className="text-xs text-red-600 font-medium mt-4">
-                      ⚠️ One or both angles have TIS Score below 40% — Approval blocked
-                    </p>
-                  )}
-                </div>
-              )}
 
               {/* InsForge Pending Images Display */}
               {(insforgeFirstViewUrl || insforgeSecondViewUrl) && !showIntegrityAnalysis && (

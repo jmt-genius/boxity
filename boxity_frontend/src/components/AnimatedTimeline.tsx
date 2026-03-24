@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import { Badge } from '@/components/ui/badge';
 import { Calendar, ExternalLink } from 'lucide-react';
 import { type BatchEvent } from '@/lib/demoData';
+import { AgentInsightBadge, parseAgentInsights } from "@/components/AgentInsightBadge";
 
 interface AnimatedTimelineProps {
   events: BatchEvent[];
@@ -19,10 +20,17 @@ export const AnimatedTimeline = ({ events }: AnimatedTimelineProps) => {
   };
 
   const getIntegrityColor = (note: string) => {
-    if (note.toLowerCase().includes('dent') || note.toLowerCase().includes('damage')) {
-      return 'bg-yellow-500';
+    const { cleanNote, insights } = parseAgentInsights(note);
+    if (insights) {
+      if (insights.decision === 'QUARANTINE') return 'bg-red-500';
+      if (insights.decision === 'REANALYZE') return 'bg-yellow-500';
+      return 'bg-green-500';
     }
-    if (note.toLowerCase().includes('verified') || note.toLowerCase().includes('intact')) {
+    const lowerNote = cleanNote.toLowerCase();
+    if (lowerNote.includes('dent') || lowerNote.includes('damage') || lowerNote.includes('tamper')) {
+      return 'bg-orange-500';
+    }
+    if (lowerNote.includes('verified') || lowerNote.includes('intact') || lowerNote.includes('approve')) {
       return 'bg-green-500';
     }
     return 'bg-blue-500';
@@ -62,7 +70,15 @@ export const AnimatedTimeline = ({ events }: AnimatedTimelineProps) => {
               </div>
             </div>
 
-            <p className="text-muted-foreground">{event.note}</p>
+            {(() => {
+              const { cleanNote, insights } = parseAgentInsights(event.note);
+              return (
+                <div className="space-y-2">
+                  <p className="text-muted-foreground whitespace-pre-wrap">{cleanNote}</p>
+                  <AgentInsightBadge insights={insights} />
+                </div>
+              );
+            })()}
 
             {event.image && (
               <div className="grid grid-cols-2 gap-3">

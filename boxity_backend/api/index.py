@@ -35,10 +35,11 @@ except Exception:
 
 # Gemini AI helper
 try:
-    from .ai import call_gemini_ensemble
+    from .agent import AgentOrchestrator
 except Exception as e:
-    call_gemini_ensemble = None
-    print("AI helper import failed:", e, file=sys.stderr)
+    AgentOrchestrator = None
+    print("Agent orchestrator import failed:", e, file=sys.stderr)
+
 
 # OpenCV vision helper (preprocessing / alignment)
 try:
@@ -274,7 +275,7 @@ def _preprocess_with_cv(baseline_bytes: bytes, current_bytes: bytes) -> Tuple[by
 # ── core analysis ────────────────────────────────────────
 
 def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[str, Any]:
-    """Analyze ONE angle: OpenCV preprocess → Gemini analysis → TIS scoring."""
+    """Analyze ONE angle: OpenCV preprocess → Agent Orchestrator (Perception & Reasoning) → TIS scoring."""
     logger.info("======== _analyze_pair START [%s] ========", view_label)
     logger.info("[LOAD] Loading baseline image (first 80 chars): %s", baseline_src[:80] + "...")
     baseline_bytes, baseline_mime = _load_image_bytes(baseline_src)
@@ -302,27 +303,49 @@ def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[
     logger.info("[STEP 1] cv_used=%s, prep_baseline=%d bytes, prep_current=%d bytes",
                 cv_used, len(prep_baseline), len(prep_current))
 
-    # STEP 2: Send preprocessed images to Gemini for analysis
-    logger.info("[STEP 2] Calling Gemini with view_label=%s...", view_label)
-    differences = _call_gemini(
-        (prep_baseline, baseline_mime or "image/jpeg"),
-        (prep_current, current_mime or "image/jpeg"),
-        view_label=view_label,
-    )
+    # STEP 2: Send preprocessed images to AgentOrchestrator
+    logger.info("[STEP 2] Calling AgentOrchestrator...")
+    
+    agent_output = None
+    if AgentOrchestrator is not None:
+        orchestrator = AgentOrchestrator(
+            baseline_bytes=prep_baseline,
+            current_bytes=prep_current,
+            baseline_mime=baseline_mime or "image/jpeg",
+            current_mime=current_mime or "image/jpeg"
+        )
+        agent_output = orchestrator.execute()
+        differences = agent_output.get("final_differences", [])
+        
+        # Standardize differences
+        differences = [_normalize_diff_item(it) for it in differences if isinstance(it, dict)]
+    else:
+        logger.warning("AgentOrchestrator not found, falling back to basic gemini call")
+        differences = _call_gemini(
+            (prep_baseline, baseline_mime or "image/jpeg"),
+            (prep_current, current_mime or "image/jpeg"),
+            view_label=view_label,
+        )
 
-    logger.info("[STEP 2] Gemini returned %d differences", len(differences))
-    for i, d in enumerate(differences):
-        logger.info("  diff[%d]: type=%s severity=%s region=%s desc=%s",
-                    i, d.get('type'), d.get('severity'), d.get('region'), (d.get('description', '')[:80]))
+    logger.info("[STEP 2] Differences found: %d", len(differences))
 
     for d in differences:
         d["view"] = view_label
 
-    # STEP 3: Compute TIS score from Gemini findings
+    # STEP 3: Compute TIS score from findings to retain backwards compatibility
     tis, assessment, conf_overall, notes = _compute_overall(differences)
     logger.info("[STEP 3] TIS=%d assessment=%s confidence=%.2f notes=%s", tis, assessment, conf_overall, notes)
+    
+    # Overwrite the assessment if the reasoning agent finalized something different, conditionally
+    if agent_output and assessment == "SAFE" and agent_output.get("final_decision", "") == "QUARANTINE":
+         assessment = "HIGH_RISK"
+         tis = min(tis, 39)
+         
+    can_upload = bool(tis >= 40)
+    
     logger.info("======== _analyze_pair END [%s] ========", view_label)
 
+    # Return standard shape + the new agentic nested properties
     return {
         "view": view_label,
         "differences": differences,
@@ -330,7 +353,10 @@ def _analyze_pair(baseline_src: str, current_src: str, view_label: str) -> Dict[
         "overall_assessment": assessment,
         "confidence_overall": conf_overall,
         "notes": notes,
-        "can_upload": bool(tis >= 40),
+        "can_upload": can_upload,
+        "agent_decision": agent_output.get("final_decision", "APPROVE") if agent_output else "APPROVE",
+        "agent_iterations": agent_output.get("iterations", 1) if agent_output else 1,
+        "agent_audit_log": agent_output.get("audit_log", []) if agent_output else [],
         "analysis_metadata": {
             "total_differences": len(differences),
             "high_severity_count": len([d for d in differences if str(d.get("severity", "")).upper() == "HIGH"]),
@@ -359,14 +385,6 @@ def analyze():
         logger.info("===== /analyze endpoint called, method=%s =====", request.method)
         if request.method == "OPTIONS":
             return ("", 204)
-
-        if call_gemini_ensemble is None:
-            logger.error("/analyze: Gemini module not available!")
-            return jsonify({
-                "error": "Gemini module not available.",
-                "differences": [], "aggregate_tis": 100,
-                "overall_assessment": "UNKNOWN",
-            }), 500
 
         gemini_ready = _configure_genai()
         if not gemini_ready:
@@ -411,6 +429,9 @@ def analyze():
             "confidence_overall": result["confidence_overall"],
             "notes": result["notes"],
             "can_upload": result["can_upload"],
+            "agent_decision": result.get("agent_decision", "APPROVE"),
+            "agent_iterations": result.get("agent_iterations", 1),
+            "agent_audit_log": result.get("agent_audit_log", []),
             "analysis_metadata": {
                 **result["analysis_metadata"],
                 "gemini_ready": True,
