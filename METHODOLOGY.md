@@ -15,7 +15,7 @@ Modern supply chains face significant challenges in verifying product integrity 
 ### B. Objectives
 
 1. Develop a dual-angle image capture mechanism for comprehensive package inspection.
-2. Implement an AI-powered integrity analysis pipeline using multimodal vision models (Google Gemini) with OpenCV-based preprocessing.
+2. Implement an Agentic AI integrity analysis pipeline utilizing a Perception Agent (for vision & differences) and a Reasoning Agent (for autonomous decision-making), combined with OpenCV preprocessing.
 3. Compute a quantitative *Trust Integrity Score (TIS)* to provide a standardized assessment of package condition.
 4. Record all custody events immutably using blockchain smart contracts (Ethereum/Sepolia) and decentralized file storage (IPFS via Pinata).
 5. Provide real-time verification and transparent audit trails accessible to all supply chain stakeholders.
@@ -38,13 +38,15 @@ graph TB
         WEB["Web Dashboard<br/>(React + Vite + TypeScript)"]
         QR["QR Scanner<br/>(html5-qrcode)"]
         W3["Web3 Service<br/>(ethers.js + Coinbase Wallet)"]
+        AWP["Agent Workflow Panel<br/>(Real-time Audit Log)"]
     end
 
     subgraph "Backend Layer"
         API["Flask REST API<br/>(/analyze endpoint)"]
         CV["OpenCV Vision Module<br/>(Alignment + Normalization)"]
-        AI["Gemini AI Module<br/>(Multimodal Forensic Analysis)"]
-        SCH["JSON Schema Validator<br/>(jsonschema)"]
+        ORCH["Agent Orchestrator<br/>(Multi-Agent Controller)"]
+        PA["Perception Agent<br/>(Vision & Difference Detection)"]
+        RA["Reasoning Agent<br/>(Business Logic & Decision)"]
     end
 
     subgraph "External Services"
@@ -68,11 +70,16 @@ graph TB
     W3 -->|"createBatch / logEvent"| SC
     SC -->|"On-chain"| BC
     WEB -->|"Upload images"| IPFS
+    API -.->|"Stream logs"| AWP
 
     API -->|"Step 1: Preprocess"| CV
-    CV -->|"Aligned images"| AI
-    AI -->|"Gemini API call"| GEM
-    AI -->|"Validate response"| SCH
+    CV -->|"Aligned images"| ORCH
+    ORCH -->|"Iteration loop"| PA
+    PA -->|"Vision analysis"| GEM
+    PA -->|"Differences"| RA
+    RA -->|"Evaluate decision"| GEM
+    RA -->|"Structured JSON"| ORCH
+    ORCH -->|"Final output"| API
 
     style MA fill:#4A9EFF,color:#fff
     style WEB fill:#4A9EFF,color:#fff
@@ -91,7 +98,7 @@ graph TB
 | **Web Frontend** | React + Vite + TypeScript + TailwindCSS + shadcn/ui | Admin dashboard, event logging, verification |
 | **Backend API** | Flask (Python) | REST API for image integrity analysis |
 | **Computer Vision** | OpenCV (cv2) + NumPy | Image alignment, normalization, preprocessing |
-| **AI Analysis** | Google Gemini (gemini-2.5-flash) | Multimodal forensic package comparison |
+| **Agentic AI** | Google Gemini + LangChain | Orchestrated Perception & Reasoning Agents |
 | **Blockchain** | Solidity Smart Contract on Ethereum Sepolia | Immutable batch and event ledger |
 | **Web3 Bridge** | ethers.js + Coinbase Wallet SDK | Browser-to-blockchain interaction |
 | **Decentralized Storage** | Pinata → IPFS | Content-addressed image and metadata storage |
@@ -192,61 +199,53 @@ flowchart TD
 
 ---
 
-### Phase 4: AI-Powered Image Integrity Analysis (Backend Pipeline)
+### Phase 4: Agentic AI-Powered Integrity Analysis (Backend Pipeline)
 
-This is the core analytical engine of the system. The backend processes each angle independently through a three-stage pipeline.
+This is the core analytical engine of the system. The backend processes each angle independently through a multi-agent orchestrated pipeline.
 
 #### Complete Image Analysis Pipeline
 
 ```mermaid
 flowchart TD
-    START["POST /analyze<br/>{ baseline_b64, current_b64,<br/>view_label }"] --> VALIDATE["Validate inputs:<br/>Check Gemini API key,<br/>verify image presence"]
-    VALIDATE -->|"Invalid"| ERR1["Return 400/500 error<br/>with default TIS=100"]
-    VALIDATE -->|"Valid"| LOAD["Load image bytes:<br/>Decode base64 / Fetch URL"]
+    START["POST /analyze<br/>{ baseline_b64, current_b64,<br/>view_label }"] --> LOAD["Load image bytes &<br/>OpenCV Preprocessing"]
+    
+    LOAD --> ORCH["STAGE 1: Agent Orchestrator<br/>(Initialize multi-agent loop)"]
 
-    LOAD --> PREPROCESS["STAGE 1: OpenCV Preprocessing"]
-
-    subgraph "Stage 1: OpenCV Preprocessing (vision.py)"
-        PREPROCESS --> DECODE["Decode images via<br/>cv2.imdecode()"]
-        DECODE --> RESIZE["Resize current image<br/>to baseline dimensions"]
-        RESIZE --> FEAT["Feature Detection:<br/>ORB (1500 features)<br/>SIFT (1000 features)"]
-        FEAT --> MATCH["Feature Matching:<br/>BFMatcher with KNN (k=2)<br/>Lowe's Ratio Test (0.7 - 0.75)"]
-        MATCH --> HOMO["RANSAC Homography<br/>(threshold=3.0, maxIters=2000)"]
-        HOMO --> WARP["Warp Perspective<br/>(best homography, ≥8 inliers)"]
-        WARP --> LAB["Convert to LAB Color Space"]
-        LAB --> CLAHE["Apply CLAHE<br/>(clipLimit=3.0, tileGrid=8×8)<br/>on L channel"]
-        CLAHE --> HISTEQ["Histogram Equalization<br/>(weighted blend 0.8:0.2)"]
-        HISTEQ --> ENCODE["Encode as JPEG<br/>(quality=95)"]
+    subgraph "Stage 2: Perception Agent Tool"
+        ORCH --> PA_RUN["Perception Agent Tool<br/>(Analyzes image pair)"]
+        PA_RUN --> GEM1["Gemini Vision API<br/>(gemini-2.5-flash)"]
+        GEM1 --> EXTR["Extract Differences,<br/>Overall Confidence, Max Severity"]
     end
 
-    ENCODE --> GEMINI["STAGE 2: Gemini AI Analysis"]
-
-    subgraph "Stage 2: Gemini Multimodal Analysis (ai.py)"
-        GEMINI --> BUILD["Build Model:<br/>gemini-2.5-flash<br/>temp=0.15, top_k=20, top_p=0.8<br/>response_mime=application/json"]
-        BUILD --> PROMPT["Construct Prompt:<br/>System Role + Detection Rules<br/>+ Few-Shot Example<br/>+ View Context<br/>+ Baseline Image<br/>+ Current Image"]
-        PROMPT --> CALL["Send to Gemini API<br/>(with retry logic:<br/>3 retries, exponential backoff)"]
-        CALL --> PARSE["Extract JSON response<br/>Strip markdown fencing<br/>Parse { differences: [...] }"]
-        PARSE --> SCHEMA["Schema Validation<br/>(jsonschema)<br/>Auto-repair if invalid"]
-        SCHEMA --> LIMIT["Limit to 8 differences max"]
+    subgraph "Stage 3: Reasoning Agent"
+        EXTR --> RA_RUN["Reasoning Agent<br/>(Evaluates findings)"]
+        RA_RUN --> GEM2["Gemini LLM API<br/>(Structured DecisionOutput)"]
+        GEM2 --> EVAL{"Confidence >= 0.70?"}
+        
+        EVAL -->|"No (Low Confidence)"| REANALYZE{"Retries < 2?"}
+        REANALYZE -->|"Yes"| ADJUST["Adjust Instructions<br/>(Request Re-analysis)"]
+        ADJUST --> ORCH
+        REANALYZE -->|"No"| QUAR["Force Decision: QUARANTINE"]
+        
+        EVAL -->|"Yes (High Confidence)"| DECIDE["Determine Decision:<br/>APPROVE, FLAG, or QUARANTINE"]
     end
 
-    LIMIT --> SCORE["STAGE 3: TIS Computation"]
+    DECIDE --> TIS["STAGE 4: TIS Computation & Sync"]
+    QUAR --> TIS
 
-    subgraph "Stage 3: Trust Integrity Score (index.py)"
-        SCORE --> INIT["Initialize TIS = 100"]
-        INIT --> APPLY["Apply tis_delta per difference:<br/>repackaging: -33.4<br/>edge_distortion: -23.3<br/>corner_distortion: -20.5<br/>dent: -17<br/>digital_edit: -22<br/>labeling: -33"]
-        APPLY --> CRITICAL["Check critical issues:<br/>seal_tamper → cap TIS at 20<br/>repackaging → cap TIS at 15<br/>digital_edit → cap TIS at 10"]
-        CRITICAL --> MULTI["Check multiple severities:<br/>≥2 HIGH → cap TIS at 30<br/>≥1 HIGH + ≥2 MED → cap at 35"]
-        MULTI --> ASSESS["Compute assessment:<br/>TIS ≥ 80 → SAFE<br/>TIS ≥ 40 → MODERATE_RISK<br/>TIS < 40 → HIGH_RISK"]
-        ASSESS --> UPLOAD["Set can_upload:<br/>TIS ≥ 40 → true<br/>TIS < 40 → false"]
+    subgraph "Stage 4: Trust Integrity Score & Assessment Sync"
+        TIS --> INIT["Calculate Baseline TIS/Assessment"]
+        INIT --> SYNC["Sync with Agent Decision:<br/>If Agent=QUARANTINE,<br/>force HIGH_RISK & TIS <= 39"]
     end
 
-    UPLOAD --> RESPONSE["Return JSON Response:<br/>differences, aggregate_tis,<br/>overall_assessment,<br/>confidence_overall, notes,<br/>can_upload, analysis_metadata"]
+    SYNC --> AUDIT["Compile Audit Log & Actions"]
+    AUDIT --> RESPONSE["Return JSON Response:<br/>differences, agent_decision,<br/>agent_audit_log, assessment..."]
 
     style START fill:#4A9EFF,color:#fff
-    style PREPROCESS fill:#22C55E,color:#fff
-    style GEMINI fill:#8B5CF6,color:#fff
-    style SCORE fill:#F7931A,color:#fff
+    style ORCH fill:#FF6B6B,color:#fff
+    style PA_RUN fill:#22C55E,color:#fff
+    style RA_RUN fill:#8B5CF6,color:#fff
+    style TIS fill:#F7931A,color:#fff
     style RESPONSE fill:#EF4444,color:#fff
 ```
 
@@ -267,7 +266,7 @@ The preprocessing stage normalizes both images to enable accurate comparison by 
 | 9 | Contrast Enhancement | `cv2.equalizeHist()` + weighted blend (0.8 original + 0.2 equalized) | Enhance structural visibility |
 | 10 | Output Encoding | JPEG quality=95 | Encode normalized images |
 
-#### Stage 2: Gemini AI Multimodal Forensic Analysis (`ai.py`)
+#### Stage 2: Perception Agent & Stage 3: Reasoning Agent (`agent.py`)
 
 ##### Prompt Structure (Detailed Breakdown)
 
@@ -372,7 +371,7 @@ After receiving the Gemini response, the system:
 4. If validation fails, sends a repair prompt back to Gemini asking it to fix the JSON
 5. Re-validates the repaired output
 
-#### Stage 3: Trust Integrity Score (TIS) Computation
+#### Stage 4: Trust Integrity Score (TIS) Computation & Synchronization
 
 ```mermaid
 flowchart TD
@@ -388,23 +387,31 @@ flowchart TD
     MULTI -->|"≥2 HIGH"| CAP30["TIS = min(TIS, 30)<br/>HIGH_RISK"]
     MULTI -->|"≥1 HIGH + ≥2 MED"| CAP35["TIS = min(TIS, 35)<br/>HIGH_RISK"]
     MULTI -->|"Other"| ASSESS{"TIS value?"}
-    ASSESS -->|"≥ 80"| RESULT_SAFE["SAFE<br/>Proceed"]
-    ASSESS -->|"≥ 40"| RESULT_MOD["MODERATE_RISK<br/>Supervisor Review"]
-    ASSESS -->|"< 40"| RESULT_HIGH["HIGH_RISK<br/>Quarantine"]
+    ASSESS -->|"≥ 80"| RESULT_SAFE["SAFE"]
+    ASSESS -->|"≥ 40"| RESULT_MOD["MODERATE_RISK"]
+    ASSESS -->|"< 40"| RESULT_HIGH["HIGH_RISK"]
 
-    CAP20 --> FINAL["Return TIS, assessment,<br/>confidence, notes, can_upload"]
-    CAP15 --> FINAL
-    CAP10 --> FINAL
-    CAP30 --> FINAL
-    CAP35 --> FINAL
-    RESULT_SAFE --> FINAL
-    RESULT_MOD --> FINAL
-    RESULT_HIGH --> FINAL
+    CAP20 --> AGENT_OVR
+    CAP15 --> AGENT_OVR
+    CAP10 --> AGENT_OVR
+    CAP30 --> AGENT_OVR
+    CAP35 --> AGENT_OVR
+    RESULT_SAFE --> AGENT_OVR
+    RESULT_MOD --> AGENT_OVR
+    RESULT_HIGH --> AGENT_OVR
+    SAFE --> AGENT_OVR
+    
+    AGENT_OVR{"AgentDecision ==<br/>QUARANTINE?"}
+    AGENT_OVR -->|"Yes"| FORCE_QUAR["assessment = HIGH_RISK<br/>TIS = min(TIS, 39)"]
+    AGENT_OVR -->|"No"| FINAL["Return TIS, assessment,<br/>confidence, agent logs"]
+    FORCE_QUAR --> FINAL
 
     style START fill:#22C55E,color:#fff
     style RESULT_SAFE fill:#22C55E,color:#fff
     style RESULT_MOD fill:#F7931A,color:#fff
     style RESULT_HIGH fill:#EF4444,color:#fff
+    style FORCE_QUAR fill:#EF4444,color:#fff
+    style AGENT_OVR fill:#8B5CF6,color:#fff
 ```
 
 ---
@@ -485,10 +492,10 @@ flowchart TD
         P3C["Fetch baseline from<br/>smart contract"]
     end
 
-    subgraph "Phase 4: Analysis"
-        P4A["Analyze Angle 1<br/>(POST /analyze)"]
-        P4B["Analyze Angle 2<br/>(POST /analyze)"]
-        P4C{"Both TIS ≥ 40?"}
+    subgraph "Phase 4: Multi-Agent Analysis"
+        P4A["Agent Orchestrator:<br/>Analyze Angle 1"]
+        P4B["Agent Orchestrator:<br/>Analyze Angle 2"]
+        P4C{"Decisions = APPROVE<br/>& Both TIS ≥ 40?"}
     end
 
     subgraph "Phase 5: Logging"
@@ -577,6 +584,9 @@ struct BatchEvent {
   "confidence_overall": 0.0-1.0,
   "notes": "string",
   "can_upload": true/false,
+  "agent_decision": "APPROVE | QUARANTINE | REANALYZE",
+  "agent_iterations": "integer",
+  "agent_audit_log": ["array of agent iteration records"],
   "analysis_metadata": {
     "total_differences": "integer",
     "high_severity_count": "integer",
